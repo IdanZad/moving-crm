@@ -50,6 +50,8 @@ type LeadJob = {
   pickup_zip: string;
   delivery_zip: string;
   status: string;
+  volume?: number | null;
+  weight?: number | null;
   price?: number | null;
   estimatedTotal?: EstimatedTotal | null;
   payments?: LeadPayment[];
@@ -74,6 +76,7 @@ type CompanyTone = {
 };
 
 const DEFAULT_COMPANY_TONE: CompanyTone = Object.freeze({ tint: "#e0f2fe", border: "#7dd3fc", text: "#0c4a6e" });
+const ALL_SELECTED_COMPANIES_VALUE = "__all_selected_companies__";
 
 function companyKeyForJob(job: LeadJob): string {
   return job.company_name || job.company_id || "unknown";
@@ -249,6 +252,13 @@ function formatPercent(value: number): string {
   return `${value.toFixed(1)}%`;
 }
 
+function formatJobVolumeWeight(job: LeadJob): string {
+  const volume = typeof job.volume === "number" && Number.isFinite(job.volume) ? Math.round(job.volume) : null;
+  const weight = typeof job.weight === "number" && Number.isFinite(job.weight) ? Math.round(job.weight) : null;
+  if (volume == null && weight == null) return "Cuft/Weight: -";
+  return `Cuft/Weight: ${volume ?? "-"} / ${weight ?? "-"}`;
+}
+
 function parseEstimatedTotal(raw: unknown): EstimatedTotal | null {
   if (!raw || typeof raw !== "object") return null;
   const value = raw as Record<string, unknown>;
@@ -340,6 +350,43 @@ export default function DispatchPage({ mode }: { mode?: DispatchPageMode }) {
       counts.set(companyId, (counts.get(companyId) || 0) + 1);
     }
     return counts;
+  }, [calendarJobs]);
+
+  const monthlyEstimatedByCompanyId = useMemo(() => {
+    const totals = new Map<string, number>();
+    const seenLeadKeysByCompany = new Map<string, Set<string>>();
+
+    for (const job of calendarJobs) {
+      const companyId = String((job as unknown as { company_id?: string }).company_id || "");
+      if (!companyId) continue;
+
+      const leadKey = String(job.lead_id || job.id || "");
+      if (!leadKey) continue;
+
+      let seenLeadKeys = seenLeadKeysByCompany.get(companyId);
+      if (!seenLeadKeys) {
+        seenLeadKeys = new Set<string>();
+        seenLeadKeysByCompany.set(companyId, seenLeadKeys);
+      }
+      if (seenLeadKeys.has(leadKey)) continue;
+      seenLeadKeys.add(leadKey);
+
+      totals.set(companyId, (totals.get(companyId) || 0) + Number(job.estimatedTotal?.finalTotal || 0));
+    }
+
+    return totals;
+  }, [calendarJobs]);
+
+  const monthlyEstimatedAll = useMemo(() => {
+    const seenLeadKeys = new Set<string>();
+    let total = 0;
+    for (const job of calendarJobs) {
+      const leadKey = String(job.lead_id || job.id || "");
+      if (!leadKey || seenLeadKeys.has(leadKey)) continue;
+      seenLeadKeys.add(leadKey);
+      total += Number(job.estimatedTotal?.finalTotal || 0);
+    }
+    return total;
   }, [calendarJobs]);
 
   const totalLeadCount = useMemo(() => {
@@ -642,6 +689,8 @@ export default function DispatchPage({ mode }: { mode?: DispatchPageMode }) {
           pickup_zip: String(item.pickup_zip || ""),
           delivery_zip: String(item.delivery_zip || ""),
           status: String(item.status || ""),
+          volume: item.volume == null ? null : Number(item.volume),
+          weight: item.weight == null ? null : Number(item.weight),
           price: item.price == null ? null : Number(item.price),
           estimatedTotal: parseEstimatedTotal(item.estimatedTotal),
           payments: parsePayments(item.payments),
@@ -976,11 +1025,15 @@ export default function DispatchPage({ mode }: { mode?: DispatchPageMode }) {
                 }}
               >
                 <span style={{ width: 8, height: 8, borderRadius: 999, background: "#0f766e", display: "inline-block" }} />
-                All ({calendarJobs.length})
+                <span style={{ display: "grid", lineHeight: 1.15, textAlign: "left" }}>
+                  <span>All ({calendarJobs.length})</span>
+                  <span style={{ fontSize: 11, fontWeight: 700 }}>{formatMoney(monthlyEstimatedAll)}</span>
+                </span>
               </button>
               {dispatchCompanies.map((company) => {
                 const checked = selectedDispatchCompanyIds.includes(company.id);
                 const monthlyCount = monthlyJobsByCompanyId.get(company.id) || 0;
+                const monthlyEstimated = monthlyEstimatedByCompanyId.get(company.id) || 0;
                 const tone = toneForCompanyColor(company.color, company.name);
                 return (
                   <button
@@ -1008,16 +1061,17 @@ export default function DispatchPage({ mode }: { mode?: DispatchPageMode }) {
                     title={company.name}
                   >
                     <span style={{ width: 8, height: 8, borderRadius: 999, background: tone.border, display: "inline-block" }} />
-                    {company.name} ({monthlyCount})
+                    <span style={{ display: "grid", lineHeight: 1.15, textAlign: "left" }}>
+                      <span>{company.name} ({monthlyCount})</span>
+                      <span style={{ fontSize: 11, fontWeight: 700 }}>{formatMoney(monthlyEstimated)}</span>
+                    </span>
                   </button>
                 );
               })}
             </div>
-            {selectedDispatchCompanyIds.length !== 1 ? (
-              <div style={{ fontSize: 11, color: "#64748b" }}>
-                Day note/full controls are available when exactly one company is checked.
-              </div>
-            ) : null}
+            <div style={{ fontSize: 11, color: "#64748b" }}>
+              Day settings default to the current company filter. If multiple companies are checked, save applies to all selected companies.
+            </div>
 
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 10, marginTop: 4 }}>
               <div style={{ border: "1px solid #cbd5e1", borderRadius: 14, padding: "12px 14px", background: "linear-gradient(135deg, #eff6ff 0%, #ffffff 100%)" }}>
@@ -1153,7 +1207,7 @@ export default function DispatchPage({ mode }: { mode?: DispatchPageMode }) {
           ) : null}
         </div>
 
-        {!calendarLoading && selectedDispatchCompanyIds.length > 0 ? (
+        {selectedDispatchCompanyIds.length > 0 ? (
           <CompanyCalendar
             companyName={selectedDispatchCompanyIds.length === dispatchCompanies.length
               ? "All Companies"
@@ -1421,6 +1475,23 @@ function CompanyCalendar({
       return String(left.id || "").localeCompare(String(right.id || ""));
     });
   }, [jobPanelDay, jobsByDay]);
+  const panelDayCompanyGroups = useMemo(() => {
+    const map = new Map<string, LeadJob[]>();
+    for (const job of panelDayJobs) {
+      const key = String(job.company_name || "Unknown company").trim() || "Unknown company";
+      const bucket = map.get(key) || [];
+      bucket.push(job);
+      map.set(key, bucket);
+    }
+    return [...map.entries()].map(([companyName, jobs]) => ({ companyName, jobs }));
+  }, [panelDayJobs]);
+  const panelDayJobFallbackOrderById = useMemo(() => {
+    const map = new Map<string, number>();
+    panelDayJobs.forEach((job, idx) => {
+      map.set(job.id, idx + 1);
+    });
+    return map;
+  }, [panelDayJobs]);
 
   useEffect(() => {
     if (!selectedJobId) return;
@@ -1439,15 +1510,30 @@ function CompanyCalendar({
     return `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
   }
 
+  function defaultPanelCompanyId(): string {
+    if (daySettingCompanies.length === 1) return daySettingCompanies[0].id;
+    if (daySettingCompanies.length > 1) return ALL_SELECTED_COMPANIES_VALUE;
+    return "";
+  }
+
   function openDayPanel(day: number, preferredCompanyId = "") {
     const dayJobs = jobsByDay.get(day) || [];
-    const preferred = preferredCompanyId && daySettingCompanies.some((company) => company.id === preferredCompanyId)
+    const fallbackCompanyId = defaultPanelCompanyId();
+    if (fallbackCompanyId === ALL_SELECTED_COMPANIES_VALUE) {
+      setPanelCompanyId(ALL_SELECTED_COMPANIES_VALUE);
+      setPanelError("");
+      setJobPanelDay(day);
+      return;
+    }
+    const preferred = preferredCompanyId && (
+      preferredCompanyId === ALL_SELECTED_COMPANIES_VALUE
+      || daySettingCompanies.some((company) => company.id === preferredCompanyId)
+    )
       ? preferredCompanyId
       : "";
     const dayMatchedCompanyId = daySettingCompanies.find((company) =>
       dayJobs.some((job) => String(job.company_id || "") === company.id)
     )?.id || "";
-    const fallbackCompanyId = daySettingCompanies[0]?.id || "";
     setPanelCompanyId(preferred || dayMatchedCompanyId || fallbackCompanyId);
     setPanelError("");
     setJobPanelDay(day);
@@ -1481,9 +1567,14 @@ function CompanyCalendar({
     setPanelSaving(true);
     setPanelError("");
     try {
-      const saved = await onSaveDaySetting(panelCompanyId, dayDateKey(jobPanelDay), panelIsFull, panelNote);
-      setPanelIsFull(Boolean(saved?.is_full));
-      setPanelNote(saved?.note || "");
+      const dayKey = dayDateKey(jobPanelDay);
+      if (panelCompanyId === ALL_SELECTED_COMPANIES_VALUE) {
+        await Promise.all(daySettingCompanies.map((company) => onSaveDaySetting(company.id, dayKey, panelIsFull, panelNote)));
+      } else {
+        const saved = await onSaveDaySetting(panelCompanyId, dayKey, panelIsFull, panelNote);
+        setPanelIsFull(Boolean(saved?.is_full));
+        setPanelNote(saved?.note || "");
+      }
     } catch (err: unknown) {
       setPanelError(err instanceof Error ? err.message : "Failed to save day setting");
     } finally {
@@ -1493,9 +1584,10 @@ function CompanyCalendar({
 
   useEffect(() => {
     if (jobPanelDay == null) return;
-    if (!panelCompanyId) {
+    if (!panelCompanyId || panelCompanyId === ALL_SELECTED_COMPANIES_VALUE) {
       setPanelIsFull(false);
       setPanelNote("");
+      setPanelLoading(false);
       return;
     }
     let cancelled = false;
@@ -1649,7 +1741,7 @@ function CompanyCalendar({
                         <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 600 }}>{job.full_name}</div>
                         <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: getCompanyTone(job).text, fontWeight: 700 }}>{job.company_name || "Unknown company"}</div>
                         <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "#475569" }}>{job.pickup_zip || "?"}{" -> "}{job.delivery_zip || "?"}</div>
-                        <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: job.id === selectedJobId ? "#1d4ed8" : getCompanyTone(job).text }}>{job.status || "booked"}</div>
+                        <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: job.id === selectedJobId ? "#1d4ed8" : getCompanyTone(job).text }}>{formatJobVolumeWeight(job)}</div>
                         <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "#475569", fontSize: 11 }}>{`Job ${job.job_order || idx + 1}`}</div>
                         {job.price != null ? <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "#0f766e" }}>${job.price.toFixed(2)}</div> : null}
                       </Link>
@@ -1734,6 +1826,7 @@ function CompanyCalendar({
                     disabled={daySettingCompanies.length === 0 || panelSaving}
                   >
                     {daySettingCompanies.length === 0 ? <option value="">No selected companies</option> : null}
+                    {daySettingCompanies.length > 1 ? <option value={ALL_SELECTED_COMPANIES_VALUE}>All selected companies</option> : null}
                     {daySettingCompanies.map((company) => (
                       <option key={company.id} value={company.id}>{company.name}</option>
                     ))}
@@ -1744,7 +1837,7 @@ function CompanyCalendar({
                     type="checkbox"
                     checked={panelIsFull}
                     onChange={(e) => setPanelIsFull(e.target.checked)}
-                    disabled={!panelCompanyId || panelLoading || panelSaving}
+                    disabled={!panelCompanyId || panelLoading || panelSaving || daySettingCompanies.length === 0}
                   />
                   Mark day as full
                 </label>
@@ -1755,17 +1848,18 @@ function CompanyCalendar({
                     onChange={(e) => setPanelNote(e.target.value)}
                     placeholder="Add context for dispatchers (parking, access, constraints, etc.)"
                     rows={4}
-                    disabled={!panelCompanyId || panelLoading || panelSaving}
+                    disabled={!panelCompanyId || panelLoading || panelSaving || daySettingCompanies.length === 0}
                     style={{ width: "100%", boxSizing: "border-box", border: "1px solid #cbd5e1", borderRadius: 6, padding: "8px 10px", fontSize: 13, resize: "vertical", background: "#fff" }}
                   />
                 </label>
                 {panelLoading ? <div style={{ fontSize: 12, color: "#475569" }}>Loading day setting...</div> : null}
+                {panelCompanyId === ALL_SELECTED_COMPANIES_VALUE ? <div style={{ fontSize: 12, color: "#475569" }}>Saving will apply to all selected companies.</div> : null}
                 {panelError ? <div style={{ fontSize: 12, color: "#ba0517" }}>{panelError}</div> : null}
                 <div style={{ display: "flex", justifyContent: "flex-end" }}>
                   <button
                     type="button"
                     onClick={() => void saveDayPanelSetting()}
-                    disabled={!panelCompanyId || panelLoading || panelSaving}
+                    disabled={!panelCompanyId || panelLoading || panelSaving || daySettingCompanies.length === 0}
                     style={{ border: "1px solid #0176d3", background: "#0176d3", color: "#fff", borderRadius: 4, padding: "7px 12px", fontSize: 12, fontWeight: 600 }}
                   >
                     {panelSaving ? "Saving..." : "Save Day Setting"}
@@ -1774,34 +1868,40 @@ function CompanyCalendar({
               </div>
 
               <div style={{ fontSize: 12, color: "#334155", fontWeight: 700 }}>Jobs</div>
-              {panelDayJobs.map((job, idx) => (
-                <Link
-                  key={job.id}
-                  to={`/leads/${job.lead_id || job.id}?job_id=${encodeURIComponent(job.id)}`}
-                  state={dispatchBackState}
-                  onClick={closeDayPanel}
-                  style={{
-                    display: "grid",
-                    gap: 3,
-                    textDecoration: "none",
-                    color: getCompanyTone(job).text,
-                    border: job.id === selectedJobId ? "1px solid #2563eb" : `1px solid ${getCompanyTone(job).border}`,
-                    background: job.id === selectedJobId ? "#eff6ff" : getCompanyTone(job).tint,
-                    borderRadius: 8,
-                    padding: 10,
-                    boxShadow: job.id === selectedJobId ? "0 0 0 1px rgba(37, 99, 235, 0.12)" : "none",
-                  }}
-                  title={`${job.full_name} • ${job.pickup_zip || "?"} -> ${job.delivery_zip || "?"} • ${job.status}`}
-                >
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-                    <strong style={{ fontSize: 13, color: "#0f172a" }}>{job.full_name}</strong>
-                    <span style={{ fontSize: 11, color: getCompanyTone(job).text, fontWeight: 700 }}>{`Job ${job.job_order || idx + 1}`}</span>
+              {panelDayCompanyGroups.map((group) => (
+                <div key={group.companyName} style={{ display: "grid", gap: 8 }}>
+                  <div style={{ fontSize: 12, fontWeight: 800, color: "#0f172a", padding: "2px 2px", borderBottom: "1px solid #e2e8f0" }}>
+                    {group.companyName}
                   </div>
-                  <div style={{ fontSize: 12, color: getCompanyTone(job).text, fontWeight: 700 }}>{job.company_name || "Unknown company"}</div>
-                  <div style={{ fontSize: 12, color: "#334155" }}>{job.pickup_zip || "?"} {" -> "} {job.delivery_zip || "?"}</div>
-                  <div style={{ fontSize: 11, color: getCompanyTone(job).text, fontWeight: 600 }}>{job.status || "booked"}</div>
-                  {job.price != null ? <div style={{ fontSize: 11, color: "#0f766e", fontWeight: 700 }}>${job.price.toFixed(2)}</div> : null}
-                </Link>
+                  {group.jobs.map((job) => (
+                    <Link
+                      key={job.id}
+                      to={`/leads/${job.lead_id || job.id}?job_id=${encodeURIComponent(job.id)}`}
+                      state={dispatchBackState}
+                      onClick={closeDayPanel}
+                      style={{
+                        display: "grid",
+                        gap: 3,
+                        textDecoration: "none",
+                        color: getCompanyTone(job).text,
+                        border: job.id === selectedJobId ? "1px solid #2563eb" : `1px solid ${getCompanyTone(job).border}`,
+                        background: job.id === selectedJobId ? "#eff6ff" : getCompanyTone(job).tint,
+                        borderRadius: 8,
+                        padding: 10,
+                        boxShadow: job.id === selectedJobId ? "0 0 0 1px rgba(37, 99, 235, 0.12)" : "none",
+                      }}
+                      title={`${job.full_name} • ${job.pickup_zip || "?"} -> ${job.delivery_zip || "?"} • ${job.status}`}
+                    >
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                        <strong style={{ fontSize: 13, color: "#0f172a" }}>{job.full_name}</strong>
+                        <span style={{ fontSize: 11, color: getCompanyTone(job).text, fontWeight: 700 }}>{`Job ${job.job_order || panelDayJobFallbackOrderById.get(job.id) || 1}`}</span>
+                      </div>
+                      <div style={{ fontSize: 12, color: "#334155" }}>{job.pickup_zip || "?"} {" -> "} {job.delivery_zip || "?"}</div>
+                      <div style={{ fontSize: 11, color: getCompanyTone(job).text, fontWeight: 600 }}>{formatJobVolumeWeight(job)}</div>
+                      {job.price != null ? <div style={{ fontSize: 11, color: "#0f766e", fontWeight: 700 }}>${job.price.toFixed(2)}</div> : null}
+                    </Link>
+                  ))}
+                </div>
               ))}
             </div>
           </div>

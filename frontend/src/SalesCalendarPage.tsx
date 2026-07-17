@@ -62,12 +62,26 @@ type AssigneeOption = {
   role: string;
 };
 
+type CompanyOption = {
+  companyId: string;
+  companyName: string;
+  companyColor?: string;
+};
+
 type CompanyTone = {
   tint: string;
   border: string;
   text: string;
 };
 
+type CommissionSettingsResponse = {
+  default_percent?: number;
+  items?: Array<{
+    user_id: string;
+    percent?: number | null;
+    effective_percent?: number;
+  }>;
+};
 const weekdayLabels = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const UNASSIGNED_KEY = "__unassigned__";
 const DEFAULT_COMPANY_TONE: CompanyTone = Object.freeze({ tint: "#e0f2fe", border: "#7dd3fc", text: "#0c4a6e" });
@@ -222,6 +236,31 @@ function formatPercent(value: number): string {
   return `${value.toFixed(1)}%`;
 }
 
+function repPaidCommissionAmount(paymentAmount: number, commissionPercent: number): number {
+  return paymentAmount * (commissionPercent / 100);
+}
+
+function processingFeeAmount(paymentsTotal: number): number {
+  return paymentsTotal * 0.035;
+}
+
+function leadRepCommissionStatus(job: SalesCalendarJob): { label: string; background: string; border: string; text: string } | null {
+  if ((job.assigned_to_role || "") !== "sales_rep") {
+    return null;
+  }
+
+  const payments = job.payments || [];
+  if (payments.length === 0) {
+    return { label: "Unpaid", background: "#fff1f2", border: "#fecdd3", text: "#be123c" };
+  }
+
+  const allPaid = payments.every((payment) => payment.repPaid);
+  if (allPaid) {
+    return { label: "Paid", background: "#f0fdf4", border: "#bbf7d0", text: "#15803d" };
+  }
+  return { label: "Unpaid", background: "#fff1f2", border: "#fecdd3", text: "#be123c" };
+}
+
 function parseEstimatedTotal(raw: unknown): EstimatedTotal | null {
   if (!raw || typeof raw !== "object") return null;
   const value = raw as Record<string, unknown>;
@@ -268,6 +307,7 @@ export default function SalesCalendarPage() {
   const [error, setError] = useState("");
   const [jobs, setJobs] = useState<SalesCalendarJob[]>([]);
   const [selectedAssigneeKeys, setSelectedAssigneeKeys] = useState<string[]>([]);
+  const [selectedCompanyIds, setSelectedCompanyIds] = useState<string[]>([]);
   const [totalsExpanded, setTotalsExpanded] = useState(false);
   const [dayPanelDay, setDayPanelDay] = useState<number | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
@@ -275,7 +315,10 @@ export default function SalesCalendarPage() {
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
+  const [defaultCommissionPercent, setDefaultCommissionPercent] = useState<number>(((1 - 0.035) / 3) * 100);
+  const [commissionPercentByUserId, setCommissionPercentByUserId] = useState<Map<string, number>>(new Map());
   const searchRef = useRef<HTMLDivElement | null>(null);
+  const previousCompanyOptionIdsRef = useRef<string[]>([]);
 
   const isAdmin = user?.role === "admin";
 
@@ -319,17 +362,40 @@ export default function SalesCalendarPage() {
       return;
     }
 
-    if (!isAdmin && user?.id) {
-      setSelectedAssigneeKeys([user.id]);
-      return;
-    }
-
-    setSelectedAssigneeKeys((prev) => {
-      const valid = prev.filter((key) => assigneeOptions.some((opt) => opt.key === key));
-      if (valid.length > 0) return valid;
-      return assigneeOptions.map((opt) => opt.key);
-    });
+    setSelectedAssigneeKeys(assigneeOptions.map((opt) => opt.key));
   }, [assigneeOptions, isAdmin, user?.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/users/sales-rep-commission-settings`, { headers: authHeaders(token) });
+        if (!res.ok) return;
+        const payload = (await res.json()) as CommissionSettingsResponse;
+        const fallbackDefault = typeof payload.default_percent === "number"
+          ? payload.default_percent
+          : ((1 - 0.035) / 3) * 100;
+        const nextMap = new Map<string, number>();
+        for (const item of payload.items || []) {
+          if (!item || !item.user_id) continue;
+          const effective = typeof item.effective_percent === "number" ? item.effective_percent : fallbackDefault;
+          nextMap.set(item.user_id, effective);
+        }
+        if (!cancelled) {
+          setDefaultCommissionPercent(fallbackDefault);
+          setCommissionPercentByUserId(nextMap);
+        }
+      } catch {
+        if (!cancelled) {
+          setDefaultCommissionPercent(((1 - 0.035) / 3) * 100);
+          setCommissionPercentByUserId(new Map());
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
 
   useEffect(() => {
     let cancelled = false;
@@ -379,6 +445,13 @@ export default function SalesCalendarPage() {
     };
   }, [token, viewMonth]);
 
+  function commissionPercentForJob(job: SalesCalendarJob): number {
+    if ((job.assigned_to_role || "") !== "sales_rep") return 0;
+    const assignedTo = String(job.assigned_to || "").trim();
+    if (!assignedTo) return defaultCommissionPercent;
+    return commissionPercentByUserId.get(assignedTo) ?? defaultCommissionPercent;
+  }
+
   const monthlyCountByAssignee = useMemo(() => {
     const counts = new Map<string, number>();
     for (const job of jobs) {
@@ -388,11 +461,85 @@ export default function SalesCalendarPage() {
     return counts;
   }, [jobs]);
 
-  const filteredJobs = useMemo(() => {
+  const monthlyEstimatedByAssignee = useMemo(() => {
+    const totals = new Map<string, number>();
+    const seenLeadKeysByAssignee = new Map<string, Set<string>>();
+
+    for (const job of jobs) {
+      const key = assigneeKey(job);
+      const leadKey = String(job.lead_id || job.id || "");
+      if (!leadKey) continue;
+
+      let seenLeadKeys = seenLeadKeysByAssignee.get(key);
+      if (!seenLeadKeys) {
+        seenLeadKeys = new Set<string>();
+        seenLeadKeysByAssignee.set(key, seenLeadKeys);
+      }
+      if (seenLeadKeys.has(leadKey)) continue;
+      seenLeadKeys.add(leadKey);
+
+      totals.set(key, (totals.get(key) || 0) + Number(job.estimatedTotal?.finalTotal || 0));
+    }
+
+    return totals;
+  }, [jobs]);
+
+  const monthlyEstimatedAllAssignees = useMemo(() => {
+    const seenLeadKeys = new Set<string>();
+    let total = 0;
+    for (const job of jobs) {
+      const leadKey = String(job.lead_id || job.id || "");
+      if (!leadKey || seenLeadKeys.has(leadKey)) continue;
+      seenLeadKeys.add(leadKey);
+      total += Number(job.estimatedTotal?.finalTotal || 0);
+    }
+    return total;
+  }, [jobs]);
+
+  const repFilteredJobs = useMemo(() => {
     if (selectedAssigneeKeys.length === 0) return [];
     const selected = new Set(selectedAssigneeKeys);
     return jobs.filter((job) => selected.has(assigneeKey(job)));
   }, [jobs, selectedAssigneeKeys]);
+
+  const companyOptions = useMemo(() => {
+    const map = new Map<string, CompanyOption>();
+    for (const job of repFilteredJobs) {
+      const companyId = String(job.company_id || "");
+      if (!companyId || map.has(companyId)) continue;
+      map.set(companyId, {
+        companyId,
+        companyName: String(job.company_name || "Unknown company"),
+        companyColor: job.company_color,
+      });
+    }
+    return Array.from(map.values()).sort((left, right) => left.companyName.localeCompare(right.companyName));
+  }, [repFilteredJobs, commissionPercentByUserId, defaultCommissionPercent]);
+
+  useEffect(() => {
+    const allCompanyIds = companyOptions.map((company) => company.companyId);
+    const previousIds = previousCompanyOptionIdsRef.current;
+    previousCompanyOptionIdsRef.current = allCompanyIds;
+
+    if (!allCompanyIds.length) {
+      setSelectedCompanyIds([]);
+      return;
+    }
+
+    setSelectedCompanyIds((prev) => {
+      const valid = prev.filter((id) => allCompanyIds.includes(id));
+      const previousWasAllSelected = previousIds.length > 0 && prev.length === previousIds.length && previousIds.every((id) => prev.includes(id));
+      if (!prev.length || previousWasAllSelected) return allCompanyIds;
+      if (valid.length > 0) return valid;
+      return allCompanyIds;
+    });
+  }, [companyOptions]);
+
+  const filteredJobs = useMemo(() => {
+    if (selectedCompanyIds.length === 0) return [];
+    const selectedCompanies = new Set(selectedCompanyIds);
+    return repFilteredJobs.filter((job) => selectedCompanies.has(String(job.company_id || "")));
+  }, [repFilteredJobs, selectedCompanyIds]);
 
   const totalLeadCount = useMemo(() => {
     return new Set(jobs.map((job) => String(job.lead_id || "")).filter(Boolean)).size;
@@ -401,6 +548,86 @@ export default function SalesCalendarPage() {
   const filteredLeadCount = useMemo(() => {
     return new Set(filteredJobs.map((job) => String(job.lead_id || "")).filter(Boolean)).size;
   }, [filteredJobs]);
+
+  const breakdownCompanies = useMemo(() => {
+    const companyBuckets = new Map<string, {
+      companyId: string;
+      companyName: string;
+      companyColor?: string;
+      leads: Map<string, SalesCalendarJob>;
+    }>();
+
+    for (const job of repFilteredJobs) {
+      if (!job.lead_id) continue;
+      const companyId = String(job.company_id || "");
+      if (!companyId) continue;
+      let bucket = companyBuckets.get(companyId);
+      if (!bucket) {
+        bucket = {
+          companyId,
+          companyName: String(job.company_name || "Unknown company"),
+          companyColor: job.company_color,
+          leads: new Map<string, SalesCalendarJob>(),
+        };
+        companyBuckets.set(companyId, bucket);
+      }
+      if (!bucket.leads.has(job.lead_id)) {
+        bucket.leads.set(job.lead_id, job);
+      }
+    }
+
+    function summarizeJobs(items: Iterable<SalesCalendarJob>) {
+      let estimatedTotal = 0;
+      let paymentsTotal = 0;
+      let repCommissionPaid = 0;
+      let repCommissionTotal = 0;
+      let leadCount = 0;
+      for (const job of items) {
+        leadCount += 1;
+        estimatedTotal += Number(job.estimatedTotal?.finalTotal || 0);
+        for (const payment of job.payments || []) {
+          const paymentAmount = Number(payment.amount || 0);
+          paymentsTotal += paymentAmount;
+        }
+        if ((job.assigned_to_role || "") === "sales_rep") {
+          const commissionPercent = commissionPercentForJob(job);
+          for (const payment of job.payments || []) {
+            const paymentAmount = Number(payment.amount || 0);
+            repCommissionTotal += repPaidCommissionAmount(paymentAmount, commissionPercent);
+            if (payment.repPaid) {
+              repCommissionPaid += repPaidCommissionAmount(paymentAmount, commissionPercent);
+            }
+          }
+        }
+      }
+      const remainingTotal = estimatedTotal - paymentsTotal;
+      const paymentsPercent = estimatedTotal > 0 ? (paymentsTotal / estimatedTotal) * 100 : 0;
+      const remainingPercent = estimatedTotal > 0 ? (remainingTotal / estimatedTotal) * 100 : 0;
+      const repCommissionRemaining = Math.max(0, repCommissionTotal - repCommissionPaid);
+      const companyIncome = paymentsTotal - processingFeeAmount(paymentsTotal) - repCommissionTotal;
+      return {
+        estimatedTotal,
+        paymentsTotal,
+        remainingTotal,
+        paymentsPercent,
+        remainingPercent,
+        repCommissionTotal,
+        repCommissionPaid,
+        repCommissionRemaining,
+        companyIncome,
+        leadCount,
+      };
+    }
+
+    return Array.from(companyBuckets.values())
+      .map((bucket) => ({
+        companyId: bucket.companyId,
+        companyName: bucket.companyName,
+        companyColor: bucket.companyColor,
+        ...summarizeJobs(bucket.leads.values()),
+      }))
+      .sort((left, right) => left.companyName.localeCompare(right.companyName));
+  }, [repFilteredJobs]);
 
   const salesMoneySummary = useMemo(() => {
     const uniqueLeads = new Map<string, SalesCalendarJob>();
@@ -438,6 +665,7 @@ export default function SalesCalendarPage() {
       let estimatedTotal = 0;
       let paymentsTotal = 0;
       let repCommissionPaid = 0;
+      let repCommissionTotal = 0;
       let leadCount = 0;
       for (const job of items) {
         leadCount += 1;
@@ -445,16 +673,23 @@ export default function SalesCalendarPage() {
         for (const payment of job.payments || []) {
           const paymentAmount = Number(payment.amount || 0);
           paymentsTotal += paymentAmount;
-          if (payment.repPaid) {
-            repCommissionPaid += paymentAmount * 0.3;
+        }
+        if ((job.assigned_to_role || "") === "sales_rep") {
+          const commissionPercent = commissionPercentForJob(job);
+          for (const payment of job.payments || []) {
+            const paymentAmount = Number(payment.amount || 0);
+            repCommissionTotal += repPaidCommissionAmount(paymentAmount, commissionPercent);
+            if (payment.repPaid) {
+              repCommissionPaid += repPaidCommissionAmount(paymentAmount, commissionPercent);
+            }
           }
         }
       }
       const remainingTotal = estimatedTotal - paymentsTotal;
       const paymentsPercent = estimatedTotal > 0 ? (paymentsTotal / estimatedTotal) * 100 : 0;
       const remainingPercent = estimatedTotal > 0 ? (remainingTotal / estimatedTotal) * 100 : 0;
-      const repCommissionTotal = paymentsTotal * 0.3;
       const repCommissionRemaining = Math.max(0, repCommissionTotal - repCommissionPaid);
+      const companyIncome = paymentsTotal - processingFeeAmount(paymentsTotal) - repCommissionTotal;
       return {
         estimatedTotal,
         paymentsTotal,
@@ -464,6 +699,7 @@ export default function SalesCalendarPage() {
         repCommissionTotal,
         repCommissionPaid,
         repCommissionRemaining,
+        companyIncome,
         leadCount,
       };
     }
@@ -506,6 +742,10 @@ export default function SalesCalendarPage() {
   const panelDayJobs = useMemo(() => {
     const base = dayPanelDay == null ? [] : (jobsByDay.get(dayPanelDay) || []);
     return [...base].sort((left, right) => {
+      const leftCompany = (left.company_name || "").trim().toLowerCase() || "zzz";
+      const rightCompany = (right.company_name || "").trim().toLowerCase() || "zzz";
+      if (leftCompany !== rightCompany) return leftCompany.localeCompare(rightCompany);
+
       const leftRep = (left.assigned_to_name || "").trim().toLowerCase() || "zzz";
       const rightRep = (right.assigned_to_name || "").trim().toLowerCase() || "zzz";
       if (leftRep !== rightRep) return leftRep.localeCompare(rightRep);
@@ -517,8 +757,22 @@ export default function SalesCalendarPage() {
       return String(left.id || "").localeCompare(String(right.id || ""));
     });
   }, [dayPanelDay, jobsByDay]);
+  const panelDayCompanyGroups = useMemo(() => {
+    const map = new Map<string, SalesCalendarJob[]>();
+    for (const job of panelDayJobs) {
+      const key = String(job.company_name || "Unknown company").trim() || "Unknown company";
+      const bucket = map.get(key) || [];
+      bucket.push(job);
+      map.set(key, bucket);
+    }
+    return [...map.entries()].map(([companyName, jobs]) => ({ companyName, jobs }));
+  }, [panelDayJobs]);
   const panelDayTotal = useMemo(
     () => panelDayJobs.reduce((sum, job) => sum + Number(leadDisplayAmount(job) || 0), 0),
+    [panelDayJobs]
+  );
+  const panelDayPayments = useMemo(
+    () => panelDayJobs.reduce((sum, job) => sum + (job.payments || []).reduce((pSum, payment) => pSum + Number(payment.amount || 0), 0), 0),
     [panelDayJobs]
   );
 
@@ -649,12 +903,16 @@ export default function SalesCalendarPage() {
               }}
             >
               <span style={{ width: 8, height: 8, borderRadius: 999, background: "#0f766e", display: "inline-block" }} />
-              All ({totalLeadCount})
+              <span style={{ display: "grid", lineHeight: 1.15, textAlign: "left" }}>
+                <span>All ({totalLeadCount})</span>
+                <span style={{ fontSize: 11, fontWeight: 700 }}>{formatMoney(monthlyEstimatedAllAssignees)}</span>
+              </span>
             </button>
 
             {assigneeOptions.map((assignee) => {
               const checked = selectedAssigneeKeys.includes(assignee.key);
               const count = monthlyCountByAssignee.get(assignee.key) || 0;
+              const estimatedTotal = monthlyEstimatedByAssignee.get(assignee.key) || 0;
               const role = roleLabel(assignee.role);
               const repTone = toneForRepName(assignee.name);
               return (
@@ -679,7 +937,10 @@ export default function SalesCalendarPage() {
                   }}
                 >
                   <span style={{ width: 8, height: 8, borderRadius: 999, background: checked ? repTone.border : "#94a3b8", display: "inline-block" }} />
-                  <span style={{ color: repTone.text, fontWeight: 700 }}>{assignee.name}</span>{role ? ` (${role})` : ""} ({count})
+                  <span style={{ display: "grid", lineHeight: 1.15, textAlign: "left" }}>
+                    <span style={{ color: repTone.text, fontWeight: 700 }}>{assignee.name}</span>{role ? ` (${role})` : ""} ({count})
+                    <span style={{ fontSize: 11, fontWeight: 700, color: repTone.text }}>{formatMoney(estimatedTotal)}</span>
+                  </span>
                 </button>
               );
             })}
@@ -753,32 +1014,44 @@ export default function SalesCalendarPage() {
             ) : null}
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 10, marginTop: 4 }}>
-            <div style={{ border: "1px solid #cbd5e1", borderRadius: 14, padding: "12px 14px", background: "linear-gradient(135deg, #eff6ff 0%, #ffffff 100%)" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 10, marginTop: 4 }}>
+            <div style={{ border: "1px solid #cbd5e1", borderRadius: 14, padding: "12px 14px", background: "linear-gradient(145deg, #f8fafc 0%, #ffffff 100%)" }}>
+              <div style={{ fontSize: 11, fontWeight: 800, color: "#334155", textTransform: "uppercase", letterSpacing: "0.05em" }}>Total Leads</div>
+              <div style={{ marginTop: 6, fontSize: 24, fontWeight: 800, color: "#0f172a" }}>{salesMoneySummary.leadCount}</div>
+              <div style={{ marginTop: 4, fontSize: 12, color: "#64748b" }}>visible in current filters</div>
+            </div>
+            <div style={{ border: "1px solid #93c5fd", borderRadius: 14, padding: "12px 14px", background: "linear-gradient(145deg, #eff6ff 0%, #ffffff 100%)" }}>
               <div style={{ fontSize: 11, fontWeight: 800, color: "#1d4ed8", textTransform: "uppercase", letterSpacing: "0.05em" }}>Estimated Total</div>
               <div style={{ marginTop: 6, fontSize: 24, fontWeight: 800, color: "#0f172a" }}>{formatMoney(salesMoneySummary.estimatedTotal)}</div>
-              <div style={{ marginTop: 4, fontSize: 12, color: "#475569" }}>{salesMoneySummary.leadCount} lead{salesMoneySummary.leadCount === 1 ? "" : "s"}</div>
+              <div style={{ marginTop: 4, fontSize: 12, color: "#475569" }}>quoted job value</div>
             </div>
-            <div style={{ border: "1px solid #bbf7d0", borderRadius: 14, padding: "12px 14px", background: "linear-gradient(135deg, #f0fdf4 0%, #ffffff 100%)" }}>
+            <div style={{ border: "1px solid #86efac", borderRadius: 14, padding: "12px 14px", background: "linear-gradient(145deg, #f0fdf4 0%, #ffffff 100%)" }}>
               <div style={{ fontSize: 11, fontWeight: 800, color: "#15803d", textTransform: "uppercase", letterSpacing: "0.05em" }}>Payments</div>
               <div style={{ marginTop: 6, fontSize: 24, fontWeight: 800, color: "#0f172a" }}>{formatMoney(salesMoneySummary.paymentsTotal)}</div>
-              <div style={{ marginTop: 4, fontSize: 12, color: "#166534" }}>{formatPercent(salesMoneySummary.paymentsPercent)}</div>
+              <div style={{ marginTop: 4, fontSize: 12, color: "#166534" }}>{formatPercent(salesMoneySummary.paymentsPercent)} collected</div>
             </div>
-            <div style={{ border: "1px solid #fde68a", borderRadius: 14, padding: "12px 14px", background: "linear-gradient(135deg, #fffbeb 0%, #ffffff 100%)" }}>
+            <div style={{ border: "1px solid #fcd34d", borderRadius: 14, padding: "12px 14px", background: "linear-gradient(145deg, #fffbeb 0%, #ffffff 100%)" }}>
               <div style={{ fontSize: 11, fontWeight: 800, color: "#b45309", textTransform: "uppercase", letterSpacing: "0.05em" }}>Remaining</div>
               <div style={{ marginTop: 6, fontSize: 24, fontWeight: 800, color: "#0f172a" }}>{formatMoney(salesMoneySummary.remainingTotal)}</div>
-              <div style={{ marginTop: 4, fontSize: 12, color: "#92400e" }}>{formatPercent(salesMoneySummary.remainingPercent)}</div>
+              <div style={{ marginTop: 4, fontSize: 12, color: "#92400e" }}>{formatPercent(salesMoneySummary.remainingPercent)} pending</div>
             </div>
-            <div style={{ border: "1px solid #c7d2fe", borderRadius: 14, padding: "12px 14px", background: "linear-gradient(135deg, #eef2ff 0%, #ffffff 100%)" }}>
-              <div style={{ fontSize: 11, fontWeight: 800, color: "#4338ca", textTransform: "uppercase", letterSpacing: "0.05em" }}>Rep Paid (30%)</div>
+            <div style={{ border: "1px solid #c4b5fd", borderRadius: 14, padding: "12px 14px", background: "linear-gradient(145deg, #eef2ff 0%, #ffffff 100%)" }}>
+              <div style={{ fontSize: 11, fontWeight: 800, color: "#4338ca", textTransform: "uppercase", letterSpacing: "0.05em" }}>Rep Paid</div>
               <div style={{ marginTop: 6, fontSize: 24, fontWeight: 800, color: "#0f172a" }}>{formatMoney(salesMoneySummary.repCommissionPaid)}</div>
               <div style={{ marginTop: 4, fontSize: 12, color: "#4f46e5" }}>of {formatMoney(salesMoneySummary.repCommissionTotal)}</div>
             </div>
-            <div style={{ border: "1px solid #fecaca", borderRadius: 14, padding: "12px 14px", background: "linear-gradient(135deg, #fff1f2 0%, #ffffff 100%)" }}>
-              <div style={{ fontSize: 11, fontWeight: 800, color: "#be123c", textTransform: "uppercase", letterSpacing: "0.05em" }}>Rep Remaining (30%)</div>
+            <div style={{ border: "1px solid #fda4af", borderRadius: 14, padding: "12px 14px", background: "linear-gradient(145deg, #fff1f2 0%, #ffffff 100%)" }}>
+              <div style={{ fontSize: 11, fontWeight: 800, color: "#be123c", textTransform: "uppercase", letterSpacing: "0.05em" }}>Rep Remaining</div>
               <div style={{ marginTop: 6, fontSize: 24, fontWeight: 800, color: "#0f172a" }}>{formatMoney(salesMoneySummary.repCommissionRemaining)}</div>
-              <div style={{ marginTop: 4, fontSize: 12, color: "#be123c" }}>unpaid commission</div>
+              <div style={{ marginTop: 4, fontSize: 12, color: "#be123c" }}>unpaid to reps</div>
             </div>
+            {isAdmin ? (
+              <div style={{ border: "1px solid #6ee7b7", borderRadius: 14, padding: "12px 14px", background: "linear-gradient(145deg, #ecfdf5 0%, #ffffff 100%)" }}>
+                <div style={{ fontSize: 11, fontWeight: 800, color: "#047857", textTransform: "uppercase", letterSpacing: "0.05em" }}>Company Income</div>
+                <div style={{ marginTop: 6, fontSize: 24, fontWeight: 800, color: "#0f172a" }}>{formatMoney(salesMoneySummary.companyIncome)}</div>
+                <div style={{ marginTop: 4, fontSize: 12, color: "#047857" }}>payments - 3.5% - rep commissions</div>
+              </div>
+            ) : null}
           </div>
 
           <div style={{ border: "1px solid #dbe4ef", borderRadius: 14, background: "#fff", overflow: "hidden" }}>
@@ -789,30 +1062,69 @@ export default function SalesCalendarPage() {
             >
               <div>
                 <div style={{ fontSize: 12, fontWeight: 800, color: "#0f172a" }}>Company Breakdown</div>
-                <div style={{ fontSize: 11, color: "#64748b" }}>Totals for currently selected assignees</div>
+                <div style={{ fontSize: 11, color: "#64748b" }}>Totals for currently selected assignees. Click rows to filter companies.</div>
               </div>
               <div style={{ fontSize: 12, fontWeight: 700, color: "#334155" }}>{totalsExpanded ? "Hide" : "Show"}</div>
             </button>
             {totalsExpanded ? (
-              <div style={{ padding: 12, display: "grid", gap: 8 }}>
-                {salesMoneySummary.companies.length === 0 ? (
+              <div style={{ padding: 12, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 10 }}>
+                {breakdownCompanies.length === 0 ? (
                   <div style={{ fontSize: 12, color: "#64748b" }}>No companies selected.</div>
-                ) : salesMoneySummary.companies.map((company) => {
+                ) : breakdownCompanies.map((company) => {
                   const tone = toneForCompanyColor(company.companyColor, company.companyName);
+                  const checked = selectedCompanyIds.includes(company.companyId);
                   return (
-                    <div key={company.companyId} style={{ border: `1px solid ${tone.border}`, background: tone.tint, borderRadius: 12, padding: 12, display: "grid", gap: 6 }}>
+                    <label key={company.companyId} style={{ border: `1px solid ${checked ? tone.border : "#dbe4ef"}`, background: checked ? tone.tint : "#f8fafc", borderRadius: 14, padding: 12, display: "grid", gap: 8, cursor: "pointer", boxShadow: checked ? "0 8px 20px rgba(15,23,42,.08)" : "none", opacity: checked ? 1 : 0.72 }}>
                       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-                        <div style={{ fontSize: 13, fontWeight: 800, color: tone.text }}>{company.companyName}</div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => {
+                              setSelectedCompanyIds((prev) => checked ? prev.filter((id) => id !== company.companyId) : [...prev, company.companyId]);
+                            }}
+                            onClick={(e) => e.stopPropagation()}
+                          />
+                          <div style={{ fontSize: 13, fontWeight: 800, color: tone.text }}>{company.companyName}</div>
+                        </div>
                         <div style={{ fontSize: 11, color: tone.text }}>{company.leadCount} lead{company.leadCount === 1 ? "" : "s"}</div>
                       </div>
-                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 8 }}>
-                        <div style={{ fontSize: 12, color: "#334155" }}>Estimated: <strong>{formatMoney(company.estimatedTotal)}</strong></div>
-                        <div style={{ fontSize: 12, color: "#166534" }}>Payments: <strong>{formatMoney(company.paymentsTotal)}</strong> ({formatPercent(company.paymentsPercent)})</div>
-                        <div style={{ fontSize: 12, color: "#92400e" }}>Remaining: <strong>{formatMoney(company.remainingTotal)}</strong> ({formatPercent(company.remainingPercent)})</div>
-                        <div style={{ fontSize: 12, color: "#4338ca" }}>Rep Paid (30%): <strong>{formatMoney(company.repCommissionPaid)}</strong> of {formatMoney(company.repCommissionTotal)}</div>
-                        <div style={{ fontSize: 12, color: "#be123c" }}>Rep Remaining (30%): <strong>{formatMoney(company.repCommissionRemaining)}</strong></div>
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 }}>
+                        <div style={{ border: "1px solid #dbe4ef", background: "#fff", borderRadius: 10, padding: "7px 8px" }}>
+                          <div style={{ fontSize: 10, color: "#64748b", textTransform: "uppercase", fontWeight: 700, letterSpacing: "0.04em" }}>Estimated</div>
+                          <div style={{ fontSize: 14, color: "#0f172a", fontWeight: 800 }}>{formatMoney(company.estimatedTotal)}</div>
+                        </div>
+                        <div style={{ border: "1px solid #dbe4ef", background: "#fff", borderRadius: 10, padding: "7px 8px" }}>
+                          <div style={{ fontSize: 10, color: "#64748b", textTransform: "uppercase", fontWeight: 700, letterSpacing: "0.04em" }}>Payments</div>
+                          <div style={{ fontSize: 14, color: "#166534", fontWeight: 800 }}>{formatMoney(company.paymentsTotal)}</div>
+                          <div style={{ fontSize: 11, color: "#166534" }}>{formatPercent(company.paymentsPercent)}</div>
+                        </div>
+                        <div style={{ border: "1px solid #dbe4ef", background: "#fff", borderRadius: 10, padding: "7px 8px" }}>
+                          <div style={{ fontSize: 10, color: "#64748b", textTransform: "uppercase", fontWeight: 700, letterSpacing: "0.04em" }}>Remaining</div>
+                          <div style={{ fontSize: 14, color: "#92400e", fontWeight: 800 }}>{formatMoney(company.remainingTotal)}</div>
+                          <div style={{ fontSize: 11, color: "#92400e" }}>{formatPercent(company.remainingPercent)}</div>
+                        </div>
+                        <div style={{ border: "1px solid #dbe4ef", background: "#fff", borderRadius: 10, padding: "7px 8px" }}>
+                          <div style={{ fontSize: 10, color: "#64748b", textTransform: "uppercase", fontWeight: 700, letterSpacing: "0.04em" }}>Rep Paid</div>
+                          <div style={{ fontSize: 14, color: "#4338ca", fontWeight: 800 }}>{formatMoney(company.repCommissionPaid)}</div>
+                          <div style={{ fontSize: 11, color: "#4f46e5" }}>of {formatMoney(company.repCommissionTotal)}</div>
+                        </div>
+                        <div style={{ border: "1px solid #dbe4ef", background: "#fff", borderRadius: 10, padding: "7px 8px" }}>
+                          <div style={{ fontSize: 10, color: "#64748b", textTransform: "uppercase", fontWeight: 700, letterSpacing: "0.04em" }}>Rep Remaining</div>
+                          <div style={{ fontSize: 14, color: "#be123c", fontWeight: 800 }}>{formatMoney(company.repCommissionRemaining)}</div>
+                        </div>
+                        <div style={{ border: "1px solid #dbe4ef", background: "#fff", borderRadius: 10, padding: "7px 8px" }}>
+                          <div style={{ fontSize: 10, color: "#64748b", textTransform: "uppercase", fontWeight: 700, letterSpacing: "0.04em" }}>Total</div>
+                          <div style={{ fontSize: 14, color: "#0f172a", fontWeight: 800 }}>{formatMoney(company.paymentsTotal + company.remainingTotal)}</div>
+                        </div>
+                        {isAdmin ? (
+                          <div style={{ border: "1px solid #dbe4ef", background: "#fff", borderRadius: 10, padding: "7px 8px", gridColumn: "1 / -1" }}>
+                            <div style={{ fontSize: 10, color: "#64748b", textTransform: "uppercase", fontWeight: 700, letterSpacing: "0.04em" }}>Company Income</div>
+                            <div style={{ fontSize: 14, color: "#047857", fontWeight: 800 }}>{formatMoney(company.companyIncome)}</div>
+                          </div>
+                        ) : null}
                       </div>
-                    </div>
+                    </label>
                   );
                 })}
               </div>
@@ -865,6 +1177,7 @@ export default function SalesCalendarPage() {
                     <div style={{ display: "grid", gap: 6 }}>
                       {visibleJobs.map((job) => {
                         const repTone = toneForRepName(job.assigned_to_name || "Unassigned");
+                        const commissionStatus = leadRepCommissionStatus(job);
                         return (
                           <Link
                             key={job.id}
@@ -901,11 +1214,18 @@ export default function SalesCalendarPage() {
                             <div style={{ fontSize: 11, color: repTone.text, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                               {job.status || "booked"}
                             </div>
-                            {leadDisplayAmount(job) != null ? (
-                              <div style={{ fontSize: 11, color: "#0f766e", fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                {formatMoney(leadDisplayAmount(job) || 0)}
-                              </div>
-                            ) : null}
+                            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+                              {leadDisplayAmount(job) != null ? (
+                                <div style={{ fontSize: 11, color: "#0f766e", fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                  {formatMoney(leadDisplayAmount(job) || 0)}
+                                </div>
+                              ) : <span />}
+                              {commissionStatus ? (
+                                <span style={{ fontSize: 10, fontWeight: 700, color: commissionStatus.text, background: commissionStatus.background, border: `1px solid ${commissionStatus.border}`, borderRadius: 999, padding: "1px 6px", whiteSpace: "nowrap" }}>
+                                  {commissionStatus.label}
+                                </span>
+                              ) : null}
+                            </div>
                           </Link>
                         );
                       })}
@@ -961,7 +1281,7 @@ export default function SalesCalendarPage() {
                 </button>
                 <div>
                   <div style={{ fontSize: 14, fontWeight: 700, color: "#0f172a" }}>Day Panel • {`${year}-${String(month + 1).padStart(2, "0")}-${String(dayPanelDay).padStart(2, "0")}`}</div>
-                  <div style={{ fontSize: 12, color: "#64748b" }}>{panelDayJobs.length} lead{panelDayJobs.length === 1 ? "" : "s"} • Total {formatMoney(panelDayTotal)}</div>
+                  <div style={{ fontSize: 12, color: "#64748b" }}>{panelDayJobs.length} lead{panelDayJobs.length === 1 ? "" : "s"} • Total {formatMoney(panelDayTotal)} • Payments {formatMoney(panelDayPayments)}</div>
                 </div>
                 <button type="button" onClick={() => shiftSalesDayPanel(1)} style={calendarNavBtn} aria-label="Next day">
                   ▶
@@ -972,37 +1292,51 @@ export default function SalesCalendarPage() {
               </button>
             </div>
             <div style={{ padding: 12, overflowY: "auto", display: "grid", gap: 10 }}>
-              {panelDayJobs.map((job) => {
-                const repTone = toneForRepName(job.assigned_to_name || "Unassigned");
-                return (
-                  <Link
-                    key={job.id}
-                    to={`/leads/${job.lead_id || job.id}?job_id=${encodeURIComponent(job.id)}`}
-                    state={backState}
-                    onClick={() => setDayPanelDay(null)}
-                    style={{
-                      display: "grid",
-                      gap: 3,
-                      textDecoration: "none",
-                      color: repTone.text,
-                      border: `1px solid ${repTone.border}`,
-                      background: repTone.tint,
-                      borderRadius: 8,
-                      padding: 10,
-                    }}
-                    title={`${job.full_name} • ${job.pickup_zip || "?"} -> ${job.delivery_zip || "?"} • ${job.status}`}
-                  >
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-                      <strong style={{ fontSize: 13, color: "#0f172a" }}>{job.full_name || "Unnamed"}</strong>
-                      <span style={{ fontSize: 11, color: repTone.text, fontWeight: 700 }}>{job.assigned_to_name || "Unassigned"}</span>
-                    </div>
-                    <div style={{ fontSize: 12, color: repTone.text, fontWeight: 700 }}>{job.company_name || "Unknown company"}</div>
-                    <div style={{ fontSize: 12, color: "#334155" }}>{job.pickup_zip || "?"} {" -> "} {job.delivery_zip || "?"}</div>
-                    <div style={{ fontSize: 11, color: repTone.text, fontWeight: 600 }}>{job.status || "booked"}</div>
-                    {leadDisplayAmount(job) != null ? <div style={{ fontSize: 11, color: "#0f766e", fontWeight: 700 }}>{formatMoney(leadDisplayAmount(job) || 0)}</div> : null}
-                  </Link>
-                );
-              })}
+              {panelDayCompanyGroups.map((group) => (
+                <div key={group.companyName} style={{ display: "grid", gap: 8 }}>
+                  <div style={{ fontSize: 12, fontWeight: 800, color: "#0f172a", padding: "2px 2px", borderBottom: "1px solid #e2e8f0" }}>
+                    {group.companyName}
+                  </div>
+                  {group.jobs.map((job) => {
+                    const repTone = toneForRepName(job.assigned_to_name || "Unassigned");
+                    const commissionStatus = leadRepCommissionStatus(job);
+                    return (
+                      <Link
+                        key={job.id}
+                        to={`/leads/${job.lead_id || job.id}?job_id=${encodeURIComponent(job.id)}`}
+                        state={backState}
+                        onClick={() => setDayPanelDay(null)}
+                        style={{
+                          display: "grid",
+                          gap: 3,
+                          textDecoration: "none",
+                          color: repTone.text,
+                          border: `1px solid ${repTone.border}`,
+                          background: repTone.tint,
+                          borderRadius: 8,
+                          padding: 10,
+                        }}
+                        title={`${job.full_name} • ${job.pickup_zip || "?"} -> ${job.delivery_zip || "?"} • ${job.status}`}
+                      >
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                          <strong style={{ fontSize: 13, color: "#0f172a" }}>{job.full_name || "Unnamed"}</strong>
+                          <span style={{ fontSize: 11, color: repTone.text, fontWeight: 700 }}>{job.assigned_to_name || "Unassigned"}</span>
+                        </div>
+                        <div style={{ fontSize: 12, color: "#334155" }}>{job.pickup_zip || "?"} {" -> "} {job.delivery_zip || "?"}</div>
+                        <div style={{ fontSize: 11, color: repTone.text, fontWeight: 600 }}>{job.status || "booked"}</div>
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+                          {leadDisplayAmount(job) != null ? <div style={{ fontSize: 11, color: "#0f766e", fontWeight: 700 }}>{formatMoney(leadDisplayAmount(job) || 0)}</div> : <span />}
+                          {commissionStatus ? (
+                            <span style={{ fontSize: 10, fontWeight: 700, color: commissionStatus.text, background: commissionStatus.background, border: `1px solid ${commissionStatus.border}`, borderRadius: 999, padding: "1px 6px", whiteSpace: "nowrap" }}>
+                              {commissionStatus.label}
+                            </span>
+                          ) : null}
+                        </div>
+                      </Link>
+                    );
+                  })}
+                </div>
+              ))}
             </div>
           </div>
         </div>

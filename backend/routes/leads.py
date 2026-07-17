@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import boto3
 
 from fastapi import APIRouter, HTTPException, Query, Depends, Header, UploadFile, File
-from fastapi.responses import Response
+from fastapi.responses import Response, RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, cast, text
 from sqlalchemy.orm import Session
@@ -21,9 +21,9 @@ from company_colors import resolve_company_color
 from config import get_config
 from database import get_db
 from libs.common.phone import normalize_digits
-from libs.smartmoving.client import get_opportunity, get_opportunity_audit_activity, update_opportunity_salesperson
-from models import Lead, User, UserCompany, Company, OutreachEvent, AdminUnavailability, AdminUnavailabilityRep, RepAvailabilityWindow, AutoAssignEvent, LeadAttachment, DispatchCalendarDay, LeadJob, LeadJobCharge, Followup, SentMessage, Task
-from routes.templates import get_company_template
+from libs.smartmoving.client import get_opportunity, get_opportunity_audit_activity, get_opportunity_documents, download_opportunity_document, update_opportunity_salesperson
+from models import Lead, User, UserCompany, Company, OutreachEvent, AdminUnavailability, AdminUnavailabilityRep, RepAvailabilityWindow, AutoAssignEvent, LeadAttachment, DispatchCalendarDay, LeadJob, LeadJobCharge, Followup, SentMessage, Task, AppSetting
+from routes.templates import get_company_template, render_template
 
 logger = logging.getLogger("moving-crm")
 
@@ -204,6 +204,21 @@ def _map_smartmoving_payments(payments: list | None) -> list[dict]:
     return output
 
 
+def _merge_smartmoving_payments_with_existing(smartmoving_rows: list[dict], existing_rows: list[dict]) -> list[dict]:
+    """Keep CRM-managed payment fields (repPaid/repPaidAt) when refreshing from SmartMoving."""
+    merged: list[dict] = []
+    for index, row in enumerate(smartmoving_rows):
+        existing = existing_rows[index] if index < len(existing_rows) else {}
+        rep_paid = bool(existing.get("repPaid") or False)
+        rep_paid_at = str(existing.get("repPaidAt") or "").strip()
+
+        next_row = dict(row)
+        next_row["repPaid"] = rep_paid
+        next_row["repPaidAt"] = rep_paid_at
+        merged.append(next_row)
+    return merged
+
+
 def _map_smartmoving_estimated_charges(charges: list | None) -> list[dict]:
     output: list[dict] = []
     for charge in charges or []:
@@ -257,8 +272,10 @@ def _build_smartmoving_jobs_payload(opportunity: dict) -> list[dict]:
     jobs: list[dict] = []
     for job in opportunity.get("jobs") or []:
         addresses = job.get("jobAddresses") or []
-        pickup = str(addresses[0]).strip() if len(addresses) > 0 else ""
-        delivery = str(addresses[1]).strip() if len(addresses) > 1 else ""
+        cleaned_addresses = [str(address).strip() for address in addresses if str(address).strip()]
+        pickup = cleaned_addresses[0] if cleaned_addresses else ""
+        delivery = cleaned_addresses[-1] if len(cleaned_addresses) > 1 else ""
+        stops = cleaned_addresses[1:-1] if len(cleaned_addresses) > 2 else []
         move_date = _format_smartmoving_date(job.get("jobDate") or opportunity.get("serviceDate"))
 
         row = {
@@ -273,9 +290,10 @@ def _build_smartmoving_jobs_payload(opportunity: dict) -> list[dict]:
             row["pickup_zip"] = pickup
         if delivery:
             row["delivery_zip"] = delivery
+        if stops:
+            row["stops"] = stops
         if move_date:
             row["move_date"] = move_date
-            row["booked_move_date"] = move_date
         jobs.append(row)
     return jobs
 
@@ -331,7 +349,8 @@ def _build_smartmoving_refresh_payload(opportunity: dict, user: User) -> dict:
         payload["move_date"] = move_date
 
     payload["estimatedTotal"] = _map_smartmoving_estimated_total(opportunity.get("estimatedTotal"))
-    payload["payments"] = _map_smartmoving_payments(opportunity.get("payments") or [])
+    if isinstance(opportunity.get("payments"), list):
+        payload["payments"] = _map_smartmoving_payments(opportunity.get("payments") or [])
     payload["jobs"] = _build_smartmoving_jobs_payload(opportunity)
     return payload
 
@@ -666,6 +685,11 @@ def _lookup_sender_id(lead: Lead) -> str | None:
     return None
 
 
+def _ensure_not_dispatch_write(user: User) -> None:
+    if user.role == "dispatch":
+        raise HTTPException(status_code=403, detail="Dispatch users are read-only")
+
+
 def _effective_dispatch_date(lead: Lead) -> date | None:
     """Get the booked/service date used by dispatch calendar and search."""
     return _parse_booked_move_date(lead.move_date)
@@ -755,10 +779,12 @@ def get_dispatch_calendar(
                 "company_color": resolve_company_color(company_name, company_color),
                 "full_name": lead.full_name or "",
                 "move_date": job.move_date or "",
-                "booked_move_date": job.move_date or "",
+                "booked_move_date": job.booked_move_date.isoformat() if job.booked_move_date else "",
                 "pickup_zip": job.pickup_zip or "",
                 "delivery_zip": job.delivery_zip or "",
                 "price": float(job.price) if job.price is not None else None,
+                "volume": float(lead.volume) if lead.volume is not None else None,
+                "weight": float(lead.weight) if lead.weight is not None else None,
                 "estimatedTotal": _deserialize_estimated_total(lead.estimated_total),
                 "payments": _deserialize_payments(lead.payments),
                 "status": lead.status or "",
@@ -775,7 +801,7 @@ def get_sales_calendar(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    if user.role not in ("admin", "sales_rep"):
+    if user.role not in ("admin", "sales_rep", "dispatch"):
         raise HTTPException(status_code=403, detail="Sales calendar access required")
 
     if not move_month:
@@ -805,7 +831,7 @@ def get_sales_calendar(
         .filter(Lead.status.in_(DISPATCH_STATUSES))
     )
 
-    if user.role == "sales_rep":
+    if user.role in ("sales_rep", "dispatch"):
         rows = rows.filter(Lead.assigned_to == user.id)
     elif assigned_to:
         assigned_filter = assigned_to.strip()
@@ -1005,7 +1031,7 @@ def search_dispatch_jobs(
                     "company_name": company_name or "",
                     "company_color": resolve_company_color(company_name, company_color),
                     "full_name": lead.full_name or "",
-                    "booked_move_date": job.move_date or "",
+                    "booked_move_date": job.booked_move_date.isoformat() if job.booked_move_date else "",
                     "move_date": job.move_date or "",
                     "pickup_zip": job.pickup_zip or "",
                     "delivery_zip": job.delivery_zip or "",
@@ -1054,7 +1080,7 @@ def search_dispatch_jobs(
                 "company_name": company_name or "",
                 "company_color": resolve_company_color(company_name, company_color),
                 "full_name": lead.full_name or "",
-                "booked_move_date": job.move_date or "",
+                "booked_move_date": job.booked_move_date.isoformat() if job.booked_move_date else "",
                 "move_date": job.move_date or "",
                 "pickup_zip": job.pickup_zip or "",
                 "delivery_zip": job.delivery_zip or "",
@@ -1250,6 +1276,9 @@ def _hard_delete_lead(lead: Lead, db: Session) -> None:
 
 
 MAX_ATTACHMENT_SIZE_BYTES = 15 * 1024 * 1024  # 15 MB
+JOB_PICKUPS_SETTING_PREFIX = "lead_job_pickups:"
+JOB_DELIVERIES_SETTING_PREFIX = "lead_job_deliveries:"
+JOB_STOPS_SETTING_PREFIX = "lead_job_stops:"
 
 
 def _get_visible_lead_or_404(lead_id: str, user: User, db: Session) -> Lead:
@@ -1257,6 +1286,18 @@ def _get_visible_lead_or_404(lead_id: str, user: User, db: Session) -> Lead:
     lead = db.query(Lead).filter(Lead.id == lead_id, Lead.company_id.in_(company_ids)).first()
     if not lead:
         lead = db.query(Lead).filter(Lead.leadgen_id == lead_id, Lead.company_id.in_(company_ids)).first()
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    return lead
+
+
+def _get_visible_lead_by_smartmoving_or_404(smartmoving_id: str, user: User, db: Session) -> Lead:
+    company_ids = _get_user_company_ids(user, db)
+    lead = (
+        db.query(Lead)
+        .filter(Lead.smartmoving_id == smartmoving_id, Lead.company_id.in_(company_ids))
+        .first()
+    )
     if not lead:
         raise HTTPException(status_code=404, detail="Lead not found")
     return lead
@@ -1423,23 +1464,138 @@ def _replace_job_charges(job: LeadJob, charges: list[LeadJobChargePayload | dict
 
 
 class LeadJobCreate(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     company_id: str | None = None
     smartmoving_job_id: str = ""
     pickup_zip: str = ""
     delivery_zip: str = ""
+    stops: list[str] = Field(default_factory=list)
+    pickup_addresses: list[str] = Field(default_factory=list, alias="pickupAddresses")
+    delivery_addresses: list[str] = Field(default_factory=list, alias="deliveryAddresses")
     move_date: str = ""
     booked_move_date: str = ""
     price: float | None = None
 
 
 class LeadJobUpdate(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     company_id: str | None = None
     smartmoving_job_id: str | None = None
     pickup_zip: str | None = None
     delivery_zip: str | None = None
+    stops: list[str] | None = None
+    pickup_addresses: list[str] | None = Field(default=None, alias="pickupAddresses")
+    delivery_addresses: list[str] | None = Field(default=None, alias="deliveryAddresses")
     move_date: str | None = None
     booked_move_date: str | None = None
     price: float | None = None
+
+
+def _job_pickups_setting_key(job_id: str) -> str:
+    return f"{JOB_PICKUPS_SETTING_PREFIX}{job_id}"
+
+
+def _job_deliveries_setting_key(job_id: str) -> str:
+    return f"{JOB_DELIVERIES_SETTING_PREFIX}{job_id}"
+
+
+def _job_stops_setting_key(job_id: str) -> str:
+    return f"{JOB_STOPS_SETTING_PREFIX}{job_id}"
+
+
+def _normalize_address_list(value: list[str] | None, fallback_single: str | None = "") -> list[str]:
+    ordered: list[str] = []
+    for entry in (value or []):
+        text = _clean_optional_text(entry)
+        if text:
+            ordered.append(text)
+    if ordered:
+        return ordered
+    fallback = _clean_optional_text(fallback_single)
+    return [fallback] if fallback else []
+
+
+def _normalize_stops_list(value: list[str] | None) -> list[str]:
+    out: list[str] = []
+    for entry in (value or []):
+        text = _clean_optional_text(entry)
+        if text:
+            out.append(text)
+    return out
+
+
+def _read_addresses_from_setting(db: Session, key: str) -> list[str]:
+    row = db.query(AppSetting).filter(AppSetting.key == key).first()
+    if not row or not (row.value or "").strip():
+        return []
+    try:
+        parsed = json.loads(row.value)
+    except Exception:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    out: list[str] = []
+    for entry in parsed:
+        text = _clean_optional_text(str(entry))
+        if text:
+            out.append(text)
+    return out
+
+
+def _write_addresses_to_setting(db: Session, key: str, addresses: list[str]) -> None:
+    existing = db.query(AppSetting).filter(AppSetting.key == key).first()
+    serialized = json.dumps(addresses)
+    if existing:
+        existing.value = serialized
+    else:
+        db.add(AppSetting(key=key, value=serialized))
+
+
+def _persist_job_address_lists(db: Session, job_id: str, pickups: list[str], deliveries: list[str]) -> None:
+    _write_addresses_to_setting(db, _job_pickups_setting_key(job_id), pickups)
+    _write_addresses_to_setting(db, _job_deliveries_setting_key(job_id), deliveries)
+
+
+def _read_job_route(db: Session, job: LeadJob) -> tuple[str, list[str], str]:
+    pickup = _clean_optional_text(job.pickup_zip)
+    delivery = _clean_optional_text(job.delivery_zip)
+    stops = _read_addresses_from_setting(db, _job_stops_setting_key(job.id))
+
+    if not stops:
+        legacy_pickups = _read_addresses_from_setting(db, _job_pickups_setting_key(job.id))
+        legacy_deliveries = _read_addresses_from_setting(db, _job_deliveries_setting_key(job.id))
+        route = [*legacy_pickups, *legacy_deliveries]
+        if route:
+            if not pickup:
+                pickup = route[0]
+            if not delivery:
+                delivery = route[-1]
+            if len(route) > 2:
+                stops = route[1:-1]
+
+    return pickup, stops, delivery
+
+
+def _persist_job_route(db: Session, job_id: str, pickup: str, stops: list[str], delivery: str) -> None:
+    _write_addresses_to_setting(db, _job_pickups_setting_key(job_id), [pickup] if pickup else [])
+    _write_addresses_to_setting(db, _job_deliveries_setting_key(job_id), [delivery] if delivery else [])
+    _write_addresses_to_setting(db, _job_stops_setting_key(job_id), _normalize_stops_list(stops))
+
+
+def _validate_job_route_has_one_side(pickup: str, delivery: str) -> None:
+    if not pickup and not delivery:
+        raise HTTPException(status_code=400, detail="At least one pickup or delivery address is required")
+
+
+def _serialize_job_with_addresses(job: LeadJob, db: Session) -> dict:
+    payload = job.to_dict()
+    pickup, stops, delivery = _read_job_route(db, job)
+    payload["pickup_zip"] = pickup
+    payload["delivery_zip"] = delivery
+    payload["stops"] = [{"order": index + 1, "address": address} for index, address in enumerate(stops)]
+    return payload
 
 
 @router.get("/leads/{lead_id}/jobs")
@@ -1458,7 +1614,7 @@ def list_lead_jobs(
         .order_by(LeadJob.job_order.asc(), LeadJob.created_at.asc())
         .all()
     )
-    return {"items": [row.to_dict() for row in rows]}
+    return {"items": [_serialize_job_with_addresses(row, db) for row in rows]}
 
 
 @router.post("/leads/{lead_id}/jobs")
@@ -1468,6 +1624,7 @@ def create_lead_job(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    _ensure_not_dispatch_write(user)
     lead = _get_visible_lead_or_404(lead_id, user, db)
     company_ids = _get_user_company_ids(user, db)
 
@@ -1480,7 +1637,7 @@ def create_lead_job(
 
     move_date = _normalize_move_date(body.move_date)
     booked_date_raw = (body.booked_move_date or "").strip()
-    booked_date = _parse_booked_move_date(booked_date_raw or move_date)
+    booked_date = _parse_booked_move_date(booked_date_raw)
     if booked_date_raw and not booked_date:
         raise HTTPException(status_code=400, detail="booked_move_date must be a valid date")
 
@@ -1498,16 +1655,36 @@ def create_lead_job(
         company_id=company_id,
         job_order=_next_lead_job_order(lead.id, db),
         smartmoving_job_id=(body.smartmoving_job_id or "").strip() or None,
-        pickup_zip=(body.pickup_zip or "").strip(),
-        delivery_zip=(body.delivery_zip or "").strip(),
+        pickup_zip="",
+        delivery_zip="",
         move_date=move_date,
         booked_move_date=booked_date,
         price=price_value,
     )
+
+    pickup = _clean_optional_text(body.pickup_zip)
+    delivery = _clean_optional_text(body.delivery_zip)
+    stops = _normalize_stops_list(body.stops)
+    if body.pickup_addresses or body.delivery_addresses:
+        route = [
+            *_normalize_address_list(body.pickup_addresses, pickup),
+            *_normalize_address_list(body.delivery_addresses, delivery),
+        ]
+        if route:
+            pickup = route[0]
+            delivery = route[-1] if len(route) > 1 else ""
+            stops = route[1:-1] if len(route) > 2 else []
+
+    _validate_job_route_has_one_side(pickup, delivery)
+    row.pickup_zip = pickup
+    row.delivery_zip = delivery
+
     db.add(row)
+    db.flush()
+    _persist_job_route(db, row.id, pickup, stops, delivery)
     db.commit()
     db.refresh(row)
-    return row.to_dict()
+    return _serialize_job_with_addresses(row, db)
 
 
 @router.put("/leads/{lead_id}/jobs/{job_id}/charges")
@@ -1518,6 +1695,7 @@ def replace_lead_job_charges(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    _ensure_not_dispatch_write(user)
     lead = _get_visible_lead_or_404(lead_id, user, db)
     row = (
         db.query(LeadJob)
@@ -1530,7 +1708,7 @@ def replace_lead_job_charges(
     _replace_job_charges(row, body.estimated_charges, db)
     db.commit()
     db.refresh(row)
-    return row.to_dict()
+    return _serialize_job_with_addresses(row, db)
 
 
 @router.patch("/leads/{lead_id}/jobs/{job_id}")
@@ -1541,6 +1719,7 @@ def update_lead_job(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    _ensure_not_dispatch_write(user)
     lead = _get_visible_lead_or_404(lead_id, user, db)
     row = (
         db.query(LeadJob)
@@ -1550,7 +1729,7 @@ def update_lead_job(
     if not row:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    payload = body.dict(exclude_unset=True)
+    payload = body.model_dump(exclude_unset=True, by_alias=False)
     company_ids = _get_user_company_ids(user, db)
 
     if "company_id" in payload:
@@ -1567,14 +1746,37 @@ def update_lead_job(
     if "smartmoving_job_id" in payload:
         row.smartmoving_job_id = (payload.get("smartmoving_job_id") or "").strip() or None
 
+    current_pickup, current_stops, current_delivery = _read_job_route(db, row)
+    next_pickup = current_pickup
+    next_stops = current_stops
+    next_delivery = current_delivery
+
     if "pickup_zip" in payload:
-        row.pickup_zip = (payload.get("pickup_zip") or "").strip()
+        next_pickup = _clean_optional_text(payload.get("pickup_zip") or "")
     if "delivery_zip" in payload:
-        row.delivery_zip = (payload.get("delivery_zip") or "").strip()
+        next_delivery = _clean_optional_text(payload.get("delivery_zip") or "")
+    if "stops" in payload:
+        next_stops = _normalize_stops_list(payload.get("stops") or [])
+
+    if "pickup_addresses" in payload or "delivery_addresses" in payload:
+        route = [
+            *_normalize_address_list(payload.get("pickup_addresses") or [], next_pickup),
+            *_normalize_address_list(payload.get("delivery_addresses") or [], next_delivery),
+        ]
+        if route:
+            next_pickup = route[0]
+            next_delivery = route[-1] if len(route) > 1 else ""
+            next_stops = route[1:-1] if len(route) > 2 else []
+
+    if not next_pickup:
+        raise HTTPException(status_code=400, detail="At least one pickup address is required")
+    if not next_delivery:
+        raise HTTPException(status_code=400, detail="At least one delivery address is required")
+
+    row.pickup_zip = next_pickup
+    row.delivery_zip = next_delivery
     if "move_date" in payload:
         row.move_date = _normalize_move_date(payload.get("move_date") or "")
-        if "booked_move_date" not in payload:
-            row.booked_move_date = _parse_booked_move_date(row.move_date)
 
     if "booked_move_date" in payload:
         booked_raw = (payload.get("booked_move_date") or "").strip()
@@ -1599,9 +1801,11 @@ def update_lead_job(
                 raise HTTPException(status_code=400, detail="price must be >= 0")
             row.price = price_value
 
+    _persist_job_route(db, row.id, next_pickup, next_stops, next_delivery)
+
     db.commit()
     db.refresh(row)
-    return row.to_dict()
+    return _serialize_job_with_addresses(row, db)
 
 
 @router.delete("/leads/{lead_id}/jobs/{job_id}")
@@ -1611,6 +1815,7 @@ def delete_lead_job(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    _ensure_not_dispatch_write(user)
     lead = _get_visible_lead_or_404(lead_id, user, db)
     row = (
         db.query(LeadJob)
@@ -1621,6 +1826,16 @@ def delete_lead_job(
         raise HTTPException(status_code=404, detail="Job not found")
     if row.job_order == 1:
         raise HTTPException(status_code=400, detail="Cannot delete primary lead job")
+
+    pickups_setting = db.query(AppSetting).filter(AppSetting.key == _job_pickups_setting_key(row.id)).first()
+    if pickups_setting:
+        db.delete(pickups_setting)
+    deliveries_setting = db.query(AppSetting).filter(AppSetting.key == _job_deliveries_setting_key(row.id)).first()
+    if deliveries_setting:
+        db.delete(deliveries_setting)
+    stops_setting = db.query(AppSetting).filter(AppSetting.key == _job_stops_setting_key(row.id)).first()
+    if stops_setting:
+        db.delete(stops_setting)
 
     db.delete(row)
     db.commit()
@@ -1657,6 +1872,213 @@ def _ensure_attachment_job_column(db: Session) -> None:
         db.rollback()
 
 
+def _ensure_attachment_link_columns(db: Session) -> None:
+    """Ensure link metadata columns exist for external attachments."""
+    try:
+        db.execute(text("ALTER TABLE lead_attachments ADD COLUMN IF NOT EXISTS external_url TEXT"))
+        db.execute(text("ALTER TABLE lead_attachments ADD COLUMN IF NOT EXISTS is_external_link BOOLEAN NOT NULL DEFAULT FALSE"))
+        db.execute(text("ALTER TABLE lead_attachments ADD COLUMN IF NOT EXISTS external_source VARCHAR(50)"))
+        db.execute(text("ALTER TABLE lead_attachments ADD COLUMN IF NOT EXISTS source_external_id VARCHAR(255)"))
+        db.execute(text("CREATE INDEX IF NOT EXISTS ix_lead_attachments_external_source ON lead_attachments (external_source)"))
+        db.execute(text("CREATE INDEX IF NOT EXISTS ix_lead_attachments_source_external_id ON lead_attachments (source_external_id)"))
+        db.commit()
+    except Exception:
+        db.rollback()
+
+
+def _extract_smartmoving_document_links(payload: object) -> list[dict[str, str]]:
+    """Extract document links from unknown SmartMoving documents payload shapes."""
+    candidates: list[dict] = []
+
+    def walk(node: object) -> None:
+        if isinstance(node, list):
+            for item in node:
+                walk(item)
+            return
+        if isinstance(node, dict):
+            lower_keys = {str(key).lower() for key in node.keys()}
+            if any(key in lower_keys for key in ("url", "link", "documenturl", "downloadurl", "fileurl", "publicurl", "href", "uri")):
+                candidates.append(node)
+            for value in node.values():
+                walk(value)
+
+    def pick_text(row: dict, keys: tuple[str, ...]) -> str:
+        for key in keys:
+            for variant in (key, key.lower(), key.upper()):
+                value = row.get(variant)
+                if value not in (None, ""):
+                    text_value = str(value).strip()
+                    if text_value:
+                        return text_value
+        return ""
+
+    walk(payload)
+
+    extracted: list[dict[str, str]] = []
+    seen_urls: set[str] = set()
+    for row in candidates:
+        url = pick_text(row, ("url", "link", "documentUrl", "downloadUrl", "fileUrl", "publicUrl", "href", "uri"))
+        if not url.lower().startswith(("http://", "https://")):
+            continue
+        if url in seen_urls:
+            continue
+        seen_urls.add(url)
+        extracted.append({
+            "external_id": pick_text(row, ("id", "documentId", "fileId", "guid", "documentGuid")),
+            "name": pick_text(row, ("fileName", "name", "title", "documentName")) or "SmartMoving Document",
+            "url": url,
+            "smartmoving_job_id": pick_text(row, ("smartmovingJobId", "jobId", "opportunityJobId")),
+        })
+    return extracted
+
+
+def _sync_smartmoving_document_links(lead: Lead, user: User, db: Session) -> int:
+    """Upsert SmartMoving document links into job attachments without storing blobs."""
+    smartmoving_id = _clean_optional_text(lead.smartmoving_id)
+    if not smartmoving_id:
+        return 0
+
+    result = get_opportunity_documents(smartmoving_id)
+    if result.get("error"):
+        logger.warning("SmartMoving documents sync failed for lead %s: %s", lead.id, result.get("error"))
+        return 0
+
+    documents = _extract_smartmoving_document_links(result.get("data"))
+    if not documents:
+        return 0
+
+    _ensure_attachment_job_column(db)
+    _ensure_attachment_link_columns(db)
+
+    jobs = (
+        db.query(LeadJob)
+        .filter(LeadJob.lead_id == lead.id)
+        .order_by(LeadJob.job_order.asc(), LeadJob.created_at.asc())
+        .all()
+    )
+    if not jobs:
+        return 0
+
+    primary_job = jobs[0]
+    job_by_smartmoving_id = {
+        (row.smartmoving_job_id or "").strip(): row
+        for row in jobs
+        if (row.smartmoving_job_id or "").strip()
+    }
+
+    existing_rows = (
+        db.query(LeadAttachment)
+        .filter(
+            LeadAttachment.lead_id == lead.id,
+            LeadAttachment.external_source == "smartmoving",
+        )
+        .all()
+    )
+    existing_keys = set()
+    for row in existing_rows:
+        key = (
+            row.job_id or "",
+            (row.source_external_id or "").strip() or (row.external_url or "").strip(),
+        )
+        if key[1]:
+            existing_keys.add(key)
+
+    created = 0
+    for doc in documents:
+        target_job = job_by_smartmoving_id.get((doc.get("smartmoving_job_id") or "").strip()) or primary_job
+        key_value = (doc.get("external_id") or "").strip() or (doc.get("url") or "").strip()
+        dedupe_key = (target_job.id, key_value)
+        if not key_value or dedupe_key in existing_keys:
+            continue
+        existing_keys.add(dedupe_key)
+
+        row = LeadAttachment(
+            lead_id=lead.id,
+            job_id=target_job.id,
+            file_name=(doc.get("name") or "SmartMoving Document")[:255],
+            content_type="application/x-smartmoving-link",
+            file_size=0,
+            file_blob=b"",
+            external_url=(doc.get("url") or "")[:2048],
+            is_external_link=True,
+            external_source="smartmoving",
+            source_external_id=(doc.get("external_id") or "")[:255] or None,
+            uploaded_by=user.id,
+        )
+        db.add(row)
+        created += 1
+
+    if created:
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception("Failed to save SmartMoving document links for lead %s", lead.id)
+            return 0
+
+    return created
+
+
+def _serialize_lead_attachments(lead_id: str, db: Session) -> list[dict]:
+    attachments = (
+        db.query(LeadAttachment, User)
+        .outerjoin(User, LeadAttachment.uploaded_by == User.id)
+        .filter(LeadAttachment.lead_id == lead_id)
+        .order_by(LeadAttachment.created_at.desc())
+        .all()
+    )
+    items: list[dict] = []
+    for attachment, uploader in attachments:
+        item = attachment.to_dict()
+        item["uploaded_by_name"] = uploader.name if uploader else ""
+        items.append(item)
+    return items
+
+
+def sync_smartmoving_files(lead: Lead, user: User, db: Session) -> dict:
+    """Sync SmartMoving document links and return the updated attachment list."""
+    created_links = _sync_smartmoving_document_links(lead, user, db)
+    return {
+        "ok": True,
+        "lead_id": lead.id,
+        "created_links": created_links,
+        "items": _serialize_lead_attachments(lead.id, db),
+    }
+
+
+def _sync_smartmoving_documents_for_lead(lead: Lead, user: User, db: Session) -> dict:
+    _ensure_not_dispatch_write(user)
+    return sync_smartmoving_files(lead, user, db)
+
+
+def _download_external_attachment_or_redirect(lead: Lead, row: LeadAttachment) -> Response:
+    external_url = (getattr(row, "external_url", "") or "").strip()
+    is_external = bool(getattr(row, "is_external_link", False))
+    if not is_external or not external_url:
+        safe_name = (row.file_name or "attachment").replace('"', "")
+        headers = {"Content-Disposition": f'attachment; filename="{safe_name}"'}
+        return Response(content=row.file_blob, media_type=row.content_type or "application/octet-stream", headers=headers)
+
+    if (getattr(row, "external_source", "") or "").strip().lower() == "smartmoving":
+        smartmoving_id = _clean_optional_text(lead.smartmoving_id)
+        document_id = (getattr(row, "source_external_id", "") or "").strip()
+        if smartmoving_id:
+            fetched = download_opportunity_document(
+                smartmoving_id,
+                document_id=document_id,
+                document_url=external_url,
+            )
+            if fetched.get("ok"):
+                content = fetched.get("content") or b""
+                content_type = str(fetched.get("content_type") or row.content_type or "application/octet-stream")
+                file_name = str(fetched.get("file_name") or row.file_name or "attachment").replace('"', "")
+                headers = {"Content-Disposition": f'inline; filename="{file_name}"'}
+                return Response(content=content, media_type=content_type, headers=headers)
+
+    # Fallback keeps previous behavior when server-side fetch is not possible.
+    return RedirectResponse(url=external_url, status_code=307)
+
+
 def _backfill_attachment_jobs_for_lead(lead_id: str, db: Session) -> None:
     """Map legacy lead-level attachments to the lead primary job (job_order=1)."""
     primary_job = (
@@ -1688,6 +2110,7 @@ def list_job_attachments(
     db: Session = Depends(get_db),
 ):
     _ensure_attachment_job_column(db)
+    _ensure_attachment_link_columns(db)
     _backfill_attachment_jobs_for_lead(lead_id, db)
     job = _get_job_or_404(lead_id, job_id, user, db)
     rows = (
@@ -1713,7 +2136,9 @@ def upload_job_attachment(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    _ensure_not_dispatch_write(user)
     _ensure_attachment_job_column(db)
+    _ensure_attachment_link_columns(db)
     _backfill_attachment_jobs_for_lead(lead_id, db)
     job = _get_job_or_404(lead_id, job_id, user, db)
 
@@ -1753,6 +2178,7 @@ def download_job_attachment(
     db: Session = Depends(get_db),
 ):
     _ensure_attachment_job_column(db)
+    _ensure_attachment_link_columns(db)
     _backfill_attachment_jobs_for_lead(lead_id, db)
     job = _get_job_or_404(lead_id, job_id, user, db)
     row = (
@@ -1762,9 +2188,8 @@ def download_job_attachment(
     )
     if not row:
         raise HTTPException(status_code=404, detail="Attachment not found")
-    safe_name = (row.file_name or "attachment").replace('"', "")
-    headers = {"Content-Disposition": f'attachment; filename="{safe_name}"'}
-    return Response(content=row.file_blob, media_type=row.content_type or "application/octet-stream", headers=headers)
+    lead = _get_visible_lead_or_404(lead_id, user, db)
+    return _download_external_attachment_or_redirect(lead, row)
 
 
 @router.delete("/leads/{lead_id}/jobs/{job_id}/attachments/{attachment_id}")
@@ -1775,7 +2200,9 @@ def delete_job_attachment(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    _ensure_not_dispatch_write(user)
     _ensure_attachment_job_column(db)
+    _ensure_attachment_link_columns(db)
     _backfill_attachment_jobs_for_lead(lead_id, db)
     job = _get_job_or_404(lead_id, job_id, user, db)
     row = (
@@ -1799,7 +2226,9 @@ def rename_job_attachment(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    _ensure_not_dispatch_write(user)
     _ensure_attachment_job_column(db)
+    _ensure_attachment_link_columns(db)
     _backfill_attachment_jobs_for_lead(lead_id, db)
     job = _get_job_or_404(lead_id, job_id, user, db)
     row = (
@@ -1824,6 +2253,7 @@ def list_lead_attachments(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    _ensure_attachment_link_columns(db)
     lead = _get_visible_lead_or_404(lead_id, user, db)
     rows = (
         db.query(LeadAttachment, User)
@@ -1847,6 +2277,7 @@ def upload_lead_attachment(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    _ensure_attachment_link_columns(db)
     lead = _get_visible_lead_or_404(lead_id, user, db)
 
     file_name = (file.filename or "").strip()
@@ -1880,6 +2311,7 @@ def download_lead_attachment(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    _ensure_attachment_link_columns(db)
     lead = _get_visible_lead_or_404(lead_id, user, db)
     row = (
         db.query(LeadAttachment)
@@ -1888,10 +2320,7 @@ def download_lead_attachment(
     )
     if not row:
         raise HTTPException(status_code=404, detail="Attachment not found")
-
-    safe_name = (row.file_name or "attachment").replace('"', "")
-    headers = {"Content-Disposition": f'attachment; filename="{safe_name}"'}
-    return Response(content=row.file_blob, media_type=row.content_type or "application/octet-stream", headers=headers)
+    return _download_external_attachment_or_redirect(lead, row)
 
 
 @router.delete("/leads/{lead_id}/attachments/{attachment_id}")
@@ -1901,6 +2330,7 @@ def delete_lead_attachment(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    _ensure_attachment_link_columns(db)
     lead = _get_visible_lead_or_404(lead_id, user, db)
     row = (
         db.query(LeadAttachment)
@@ -1923,6 +2353,7 @@ def rename_lead_attachment(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    _ensure_attachment_link_columns(db)
     lead = _get_visible_lead_or_404(lead_id, user, db)
     row = (
         db.query(LeadAttachment)
@@ -1949,6 +2380,9 @@ class LeadUpdateJob(BaseModel):
     smartmoving_job_id: str | None = None
     pickup_zip: str | None = None
     delivery_zip: str | None = None
+    stops: list[str] | None = None
+    pickup_addresses: list[str] | None = Field(default=None, alias="pickupAddresses")
+    delivery_addresses: list[str] | None = Field(default=None, alias="deliveryAddresses")
     move_date: str | None = None
     booked_move_date: str | None = None
     price: float | None = None
@@ -1989,6 +2423,7 @@ def update_lead(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    _ensure_not_dispatch_write(user)
     company_ids = _get_user_company_ids(user, db)
     lead = db.query(Lead).filter(Lead.id == lead_id, Lead.company_id.in_(company_ids)).first()
     if not lead:
@@ -2093,8 +2528,6 @@ def update_lead(
         lead.weight = weight_value
     if body.move_date is not None:
         lead.move_date = _normalize_move_date(body.move_date)
-        if body.booked_move_date is None:
-            lead.booked_move_date = _parse_booked_move_date(lead.move_date)
     if body.booked_move_date is not None:
         booked_raw = (body.booked_move_date or "").strip()
         if not booked_raw:
@@ -2195,10 +2628,40 @@ def update_lead(
             if "delivery_zip" in job_payload:
                 target_job.delivery_zip = (job_payload.get("delivery_zip") or "").strip()
 
+            current_pickup, current_stops, current_delivery = _read_job_route(db, target_job)
+            next_pickup = current_pickup
+            next_stops = current_stops
+            next_delivery = current_delivery
+            touch_route = any(
+                key in job_payload
+                for key in ("pickup_zip", "delivery_zip", "stops", "pickup_addresses", "delivery_addresses")
+            )
+
+            if "pickup_zip" in job_payload:
+                next_pickup = _clean_optional_text(job_payload.get("pickup_zip") or "")
+            if "delivery_zip" in job_payload:
+                next_delivery = _clean_optional_text(job_payload.get("delivery_zip") or "")
+            if "stops" in job_payload:
+                next_stops = _normalize_stops_list(job_payload.get("stops") or [])
+
+            if "pickup_addresses" in job_payload or "delivery_addresses" in job_payload:
+                route = [
+                    *_normalize_address_list(job_payload.get("pickup_addresses") or [], next_pickup),
+                    *_normalize_address_list(job_payload.get("delivery_addresses") or [], next_delivery),
+                ]
+                if route:
+                    next_pickup = route[0]
+                    next_delivery = route[-1] if len(route) > 1 else ""
+                    next_stops = route[1:-1] if len(route) > 2 else []
+
+            if touch_route:
+                _validate_job_route_has_one_side(next_pickup, next_delivery)
+                target_job.pickup_zip = next_pickup
+                target_job.delivery_zip = next_delivery
+                _persist_job_route(db, target_job.id, next_pickup, next_stops, next_delivery)
+
             if "move_date" in job_payload:
                 target_job.move_date = _normalize_move_date(job_payload.get("move_date") or "")
-                if "booked_move_date" not in job_payload:
-                    target_job.booked_move_date = _parse_booked_move_date(target_job.move_date)
 
             if "booked_move_date" in job_payload:
                 booked_raw = (job_payload.get("booked_move_date") or "").strip()
@@ -2338,6 +2801,7 @@ def refresh_lead_from_smartmoving(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    _ensure_not_dispatch_write(user)
     lead = _get_visible_lead_or_404(lead_id, user, db)
     smartmoving_id = _clean_optional_text(lead.smartmoving_id)
     if not smartmoving_id:
@@ -2363,6 +2827,10 @@ def refresh_lead_from_smartmoving(
 
     payload = _build_smartmoving_refresh_payload(opportunity, user)
 
+    if isinstance(payload.get("payments"), list):
+        existing_payments = _deserialize_payments(lead.payments)
+        payload["payments"] = _merge_smartmoving_payments_with_existing(payload.get("payments") or [], existing_payments)
+
     audit_result = get_opportunity_audit_activity(smartmoving_id)
     if audit_result.get("error"):
         raise HTTPException(status_code=502, detail=f"SmartMoving audit failed: {audit_result['error']}")
@@ -2380,7 +2848,33 @@ def refresh_lead_from_smartmoving(
             job["booked_move_date"] = booked_iso
 
     body = LeadUpdate.model_validate(payload)
-    return update_lead(lead.id, body, user, db)
+    updated = update_lead(lead.id, body, user, db)
+    sync_result = sync_smartmoving_files(lead, user, db)
+    if isinstance(updated, dict):
+        updated["smartmoving_document_links_synced"] = sync_result["created_links"]
+    return updated
+
+
+@router.post("/leads/{lead_id}/sync-smartmoving-documents")
+def sync_smartmoving_documents(
+    lead_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Sync SmartMoving document links into CRM attachment rows without running a full lead refresh."""
+    lead = _get_visible_lead_or_404(lead_id, user, db)
+    return _sync_smartmoving_documents_for_lead(lead, user, db)
+
+
+@router.post("/leads/by-smartmoving/{smartmoving_id}/sync-smartmoving-documents")
+def sync_smartmoving_documents_by_smartmoving_id(
+    smartmoving_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Sync SmartMoving document links by SmartMoving opportunity id."""
+    lead = _get_visible_lead_by_smartmoving_or_404(smartmoving_id, user, db)
+    return _sync_smartmoving_documents_for_lead(lead, user, db)
 
 
 def _send_rep_assignment_sms(lead: Lead, db: Session) -> None:
@@ -2397,7 +2891,8 @@ def _send_rep_assignment_sms(lead: Lead, db: Session) -> None:
 
     template = get_company_template(db, company.id, "rep_assignment_sms")
     first_name = lead.full_name.split()[0] if (lead.full_name or "").strip() else ""
-    message = template.format(
+    message = render_template(
+        template,
         first_name=first_name,
         company_name=company.name,
         company_phone=company.phone or "",
@@ -2609,7 +3104,7 @@ def create_lead(
 
     normalized_move_date = _normalize_move_date(_clean_optional_text(body.move_date))
     booked_raw = _clean_optional_text(body.booked_move_date)
-    parsed_booked_date = _parse_booked_move_date(booked_raw or normalized_move_date)
+    parsed_booked_date = _parse_booked_move_date(booked_raw)
     if booked_raw and not parsed_booked_date:
         raise HTTPException(status_code=400, detail="booked_move_date must be a valid date")
 
@@ -2736,7 +3231,8 @@ def create_lead(
         from libs.aircall import send_sms, find_number_id
         first_name = lead.full_name.split()[0] if lead.full_name.strip() else ""
         template = get_company_template(db, company.id, "welcome_sms")
-        message = template.format(
+        message = render_template(
+        template,
             first_name=first_name,
             company_name=company.name,
             smartmoving_id=lead.smartmoving_id,

@@ -19,12 +19,24 @@ type UserOption = {
   name: string;
 };
 
+type CommissionSettingsResponse = {
+  default_percent?: number;
+  items?: Array<{
+    user_id: string;
+    percent?: number | null;
+    effective_percent?: number;
+  }>;
+};
+
 type LeadAttachment = {
   id: string;
   file_name: string;
   content_type: string;
   file_size: number;
   created_at: string;
+  external_url?: string;
+  is_external_link?: boolean;
+  external_source?: string;
   uploaded_by_name?: string;
 };
 
@@ -36,6 +48,7 @@ type LeadJobItem = {
   job_order: number;
   pickup_zip: string;
   delivery_zip: string;
+  stops: string[];
   move_date: string;
   booked_move_date: string;
   price: number | null;
@@ -57,6 +70,7 @@ type LeadJobDraft = {
   company_id: string;
   pickup_zip: string;
   delivery_zip: string;
+  stops: string[];
   move_date: string;
   booked_move_date: string;
   price: string;
@@ -136,6 +150,8 @@ export default function LeadDetail() {
   const [statusMenuOpen, setStatusMenuOpen] = useState(false);
   const [statusMenuRect, setStatusMenuRect] = useState<{ top: number; left: number; width: number; height: number } | null>(null);
   const [deletingLead, setDeletingLead] = useState(false);
+  const [defaultCommissionPercent, setDefaultCommissionPercent] = useState<number>(((1 - 0.035) / 3) * 100);
+  const [commissionPercentByUserId, setCommissionPercentByUserId] = useState<Map<string, number>>(new Map());
   const [leadJobs, setLeadJobs] = useState<LeadJobItem[]>([]);
   const [jobsLoading, setJobsLoading] = useState(true);
   const [jobsError, setJobsError] = useState("");
@@ -144,6 +160,7 @@ export default function LeadDetail() {
     company_id: "",
     pickup_zip: "",
     delivery_zip: "",
+    stops: [],
     move_date: "",
     booked_move_date: "",
     price: "",
@@ -174,6 +191,40 @@ export default function LeadDetail() {
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
   }, [leadId, token]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`${API_BASE}/api/users/sales-rep-commission-settings`, { headers: authHeaders(token) })
+      .then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      })
+      .then((data: CommissionSettingsResponse) => {
+        const fallbackDefault = typeof data.default_percent === "number"
+          ? data.default_percent
+          : ((1 - 0.035) / 3) * 100;
+        const nextMap = new Map<string, number>();
+        for (const item of data.items || []) {
+          if (!item || !item.user_id) continue;
+          const effective = typeof item.effective_percent === "number" ? item.effective_percent : fallbackDefault;
+          nextMap.set(item.user_id, effective);
+        }
+        if (!cancelled) {
+          setDefaultCommissionPercent(fallbackDefault);
+          setCommissionPercentByUserId(nextMap);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setDefaultCommissionPercent(((1 - 0.035) / 3) * 100);
+          setCommissionPercentByUserId(new Map());
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
 
   useEffect(() => {
     fetch(`${API_BASE}/api/companies/mine`, { headers: authHeaders(token) })
@@ -243,6 +294,9 @@ export default function LeadDetail() {
         content_type: String(row.content_type || "application/octet-stream"),
         file_size: Number(row.file_size || 0),
         created_at: String(row.created_at || ""),
+        external_url: String(row.external_url || ""),
+        is_external_link: Boolean(row.is_external_link),
+        external_source: String(row.external_source || ""),
         uploaded_by_name: String(row.uploaded_by_name || ""),
       })));
     } catch (err: unknown) {
@@ -258,6 +312,7 @@ export default function LeadDetail() {
       company_id: item.company_id || "",
       pickup_zip: item.pickup_zip || "",
       delivery_zip: item.delivery_zip || "",
+      stops: [...item.stops],
       move_date: item.move_date || "",
       booked_move_date: item.booked_move_date || "",
       price: item.price == null ? "" : String(item.price),
@@ -272,6 +327,16 @@ export default function LeadDetail() {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = (await res.json()) as { items?: Array<Record<string, unknown>> };
       const rows = Array.isArray(data.items) ? data.items : [];
+      const parseStops = (raw: unknown): string[] => {
+        const source = Array.isArray(raw) ? raw : [];
+        return source
+          .map((entry) => {
+            if (typeof entry === "string") return entry.trim();
+            if (entry && typeof entry === "object") return String((entry as Record<string, unknown>).address || "").trim();
+            return "";
+          })
+          .filter((value) => value);
+      };
       const parsed: LeadJobItem[] = rows.map((item) => ({
         id: String(item.id || ""),
         lead_id: String(item.lead_id || ""),
@@ -280,6 +345,7 @@ export default function LeadDetail() {
         job_order: Number(item.job_order || 0),
         pickup_zip: String(item.pickup_zip || ""),
         delivery_zip: String(item.delivery_zip || ""),
+        stops: parseStops(item.stops),
         move_date: String(item.move_date || ""),
         booked_move_date: String(item.booked_move_date || ""),
         price: item.price == null ? null : Number(item.price),
@@ -352,6 +418,10 @@ export default function LeadDetail() {
   }, [leadJobs, activeJobTabId, routeJobId]);
 
   async function saveJob(jobId: string) {
+    if (user?.role === "dispatch") {
+      setJobsError("Dispatch users are read-only");
+      return;
+    }
     const draft = jobDrafts[jobId];
     if (!draft) return;
     setSavingJobId(jobId);
@@ -364,6 +434,7 @@ export default function LeadDetail() {
           company_id: draft.company_id,
           pickup_zip: draft.pickup_zip,
           delivery_zip: draft.delivery_zip,
+          stops: draft.stops,
           move_date: draft.move_date,
           booked_move_date: draft.booked_move_date,
           price: draft.price.trim() === "" ? null : Number(draft.price),
@@ -379,6 +450,10 @@ export default function LeadDetail() {
   }
 
   async function addJob() {
+    if (user?.role === "dispatch") {
+      setJobsError("Dispatch users are read-only");
+      return;
+    }
     setAddingJob(true);
     setJobsError("");
     try {
@@ -389,6 +464,7 @@ export default function LeadDetail() {
           company_id: newJobDraft.company_id || String(lead?.company_id || ""),
           pickup_zip: newJobDraft.pickup_zip,
           delivery_zip: newJobDraft.delivery_zip,
+          stops: newJobDraft.stops,
           move_date: newJobDraft.move_date,
           booked_move_date: newJobDraft.booked_move_date,
           price: newJobDraft.price.trim() === "" ? null : Number(newJobDraft.price),
@@ -399,6 +475,7 @@ export default function LeadDetail() {
         company_id: String(lead?.company_id || ""),
         pickup_zip: "",
         delivery_zip: "",
+        stops: [],
         move_date: "",
         booked_move_date: "",
         price: "",
@@ -412,6 +489,10 @@ export default function LeadDetail() {
   }
 
   async function deleteJob(jobId: string) {
+    if (user?.role === "dispatch") {
+      setJobsError("Dispatch users are read-only");
+      return;
+    }
     setDeletingJobId(jobId);
     setJobsError("");
     try {
@@ -429,6 +510,10 @@ export default function LeadDetail() {
   }
 
   async function uploadAttachments(files: File[]) {
+    if (user?.role === "dispatch") {
+      setAttachmentsError("Dispatch users are read-only");
+      return;
+    }
     if (files.length === 0) return;
     if (!activeJobTabId || activeJobTabId === "__new__") {
       setAttachmentsError("Please select a job tab before uploading files.");
@@ -481,6 +566,10 @@ export default function LeadDetail() {
   }
 
   async function deleteAttachment(attachmentId: string) {
+    if (user?.role === "dispatch") {
+      setAttachmentsError("Dispatch users are read-only");
+      return;
+    }
     setAttachmentsError("");
     try {
       const res = await fetch(`${API_BASE}/api/leads/${leadId}/jobs/${activeJobTabId}/attachments/${attachmentId}`, {
@@ -495,6 +584,10 @@ export default function LeadDetail() {
   }
 
   async function renameAttachment(attachmentId: string, fileName: string) {
+    if (user?.role === "dispatch") {
+      setAttachmentsError("Dispatch users are read-only");
+      return;
+    }
     const nextName = fileName.trim();
     if (!nextName) return;
     setAttachmentsError("");
@@ -529,8 +622,9 @@ export default function LeadDetail() {
 
       const lowerName = (fileName || "").toLowerCase();
       const type = (contentType || blob.type || "").toLowerCase();
+      const signature = await blob.slice(0, 5).text();
       const isImage = type.startsWith("image/") || /\.(png|jpg|jpeg|gif|webp|bmp|svg)$/.test(lowerName);
-      const isPdf = type.includes("pdf") || lowerName.endsWith(".pdf");
+      const isPdf = type.includes("pdf") || lowerName.endsWith(".pdf") || signature === "%PDF-";
       const isText = type.startsWith("text/") || /\.(txt|md|csv|json|log|xml)$/.test(lowerName);
 
       if (isImage) {
@@ -543,8 +637,11 @@ export default function LeadDetail() {
         setPreviewType("text");
         setPreviewText(await blob.text());
       } else {
+        // Fallback for opaque binary responses from external systems.
+        window.open(objectUrl, "_blank", "noopener,noreferrer");
         setPreviewType("none");
-        setPreviewText("Preview not available for this file type.");
+        setPreviewText("");
+        return;
       }
       setPreviewOpen(true);
     } catch (err: unknown) {
@@ -589,7 +686,7 @@ export default function LeadDetail() {
   const quickAttachments = useMemo(() => {
     return [...attachments]
       .sort((a, b) => (b.created_at || "").localeCompare(a.created_at || ""))
-      .slice(0, 4);
+      .slice(0, 6);
   }, [attachments]);
 
   useEffect(() => {
@@ -638,6 +735,8 @@ export default function LeadDetail() {
   if (!lead) return <p style={{ padding: 24 }}>Lead not found.</p>;
   const canEditCompany = user?.role === "admin";
   const isDispatchUser = user?.role === "dispatch";
+  const canEditLead = !isDispatchUser;
+  const canEditJobs = !isDispatchUser;
 
   // Extract user_id from inbox_url for chat lookup
   const inboxUrl = lead.inbox_url ? String(lead.inbox_url) : "";
@@ -729,6 +828,20 @@ export default function LeadDetail() {
 
   function formatMoney(value: number): string {
     return `$${value.toFixed(2)}`;
+  }
+
+  function repPaidCommissionAmount(paymentAmount: number): number {
+    const assignedTo = String(lead?.assigned_to || "").trim();
+    const commissionPercent = assignedTo
+      ? (commissionPercentByUserId.get(assignedTo) ?? defaultCommissionPercent)
+      : defaultCommissionPercent;
+    return paymentAmount * (commissionPercent / 100);
+  }
+
+  function repPaidCommissionRatePercent(): number {
+    const assignedTo = String(lead?.assigned_to || "").trim();
+    if (!assignedTo) return defaultCommissionPercent;
+    return commissionPercentByUserId.get(assignedTo) ?? defaultCommissionPercent;
   }
 
   function renderRow(key: string) {
@@ -974,36 +1087,40 @@ export default function LeadDetail() {
                           onClick={() => void openPreview(attachment.id, attachment.file_name, attachment.content_type)}
                           style={{ border: "1px solid #cbd5e1", background: "#fff", color: "#334155", borderRadius: 4, padding: "4px 8px", fontSize: 12 }}
                         >
-                          Preview
+                          {attachment.is_external_link ? "Open Link" : "Preview"}
                         </button>
                         <button
                           type="button"
                           onClick={() => void downloadAttachment(attachment.id, attachment.file_name)}
                           style={{ border: "1px solid #0176d3", background: "#fff", color: "#0176d3", borderRadius: 4, padding: "4px 8px", fontSize: 12, fontWeight: 600 }}
                         >
-                          Download
+                          {attachment.is_external_link ? "Open" : "Download"}
                         </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setRenamingId(attachment.id);
-                            setRenameValue(attachment.file_name);
-                          }}
-                          style={{ border: "1px solid #dddbda", background: "#fff", color: "#334155", borderRadius: 4, padding: "4px 8px", fontSize: 12 }}
-                        >
-                          Rename
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (window.confirm("Delete this file?")) {
-                              void deleteAttachment(attachment.id);
-                            }
-                          }}
-                          style={{ border: "1px solid #dddbda", background: "#fff", color: "#ba0517", borderRadius: 4, padding: "4px 8px", fontSize: 12 }}
-                        >
-                          Delete
-                        </button>
+                        {canEditJobs ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setRenamingId(attachment.id);
+                                setRenameValue(attachment.file_name);
+                              }}
+                              style={{ border: "1px solid #dddbda", background: "#fff", color: "#334155", borderRadius: 4, padding: "4px 8px", fontSize: 12 }}
+                            >
+                              Rename
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (window.confirm("Delete this file?")) {
+                                  void deleteAttachment(attachment.id);
+                                }
+                              }}
+                              style={{ border: "1px solid #dddbda", background: "#fff", color: "#ba0517", borderRadius: 4, padding: "4px 8px", fontSize: 12 }}
+                            >
+                              Delete
+                            </button>
+                          </>
+                        ) : null}
                       </div>
                     </div>
                   ))}
@@ -1043,6 +1160,7 @@ export default function LeadDetail() {
         }
 
         async function saveUser() {
+          if (!canEditLead) return;
           setSavingUser(true);
           try {
             const res = await fetch(`${API_BASE}/api/leads/${leadId}`, {
@@ -1067,6 +1185,7 @@ export default function LeadDetail() {
         }
 
         async function saveCompany(nextCompanyId: string) {
+          if (!canEditLead) return;
           if (!nextCompanyId) return;
           if (nextCompanyId === String(lead?.company_id || "")) {
             setCompanyMenuOpen(false);
@@ -1094,6 +1213,7 @@ export default function LeadDetail() {
         }
 
         async function saveStatus(nextStatus: string) {
+          if (!canEditLead) return;
           if (!LEAD_STATUS_OPTIONS.includes(nextStatus)) return;
           if (nextStatus === statusValue) return;
           setSavingStatus(true);
@@ -1115,6 +1235,7 @@ export default function LeadDetail() {
         }
 
         async function saveAssignedTo(nextAssignedTo: string) {
+          if (!canEditLead) return;
           const currentAssignedTo = String(lead?.assigned_to || "");
           if (nextAssignedTo === currentAssignedTo) {
             setAssignMenuOpen(false);
@@ -1139,6 +1260,7 @@ export default function LeadDetail() {
         }
 
         async function refreshFromSmartmoving() {
+          if (!canEditLead) return;
           setRefreshingSmartmoving(true);
           try {
             const res = await fetch(`${API_BASE}/api/leads/${leadId}/refresh-smartmoving`, {
@@ -1159,6 +1281,9 @@ export default function LeadDetail() {
             setLead(updated);
             setEditCompanyId(String(updated?.company_id || ""));
             await loadLeadJobs();
+            if (activeJobTabId && activeJobTabId !== "__new__") {
+              await loadAttachments(activeJobTabId);
+            }
           } catch (e) {
             alert(`Failed to refresh from SmartMoving: ${e instanceof Error ? e.message : "error"}`);
           } finally {
@@ -1246,7 +1371,7 @@ export default function LeadDetail() {
                           type="button"
                           aria-haspopup="menu"
                           aria-expanded={statusMenuOpen}
-                          onClick={() => setStatusMenuOpen((v) => !v)}
+                          onClick={() => canEditLead && setStatusMenuOpen((v) => !v)}
                           style={{
                             display: "inline-flex",
                             alignItems: "center",
@@ -1259,16 +1384,16 @@ export default function LeadDetail() {
                             letterSpacing: "0.04em",
                             textTransform: "uppercase",
                             whiteSpace: "nowrap",
-                            cursor: "pointer",
+                            cursor: canEditLead ? "pointer" : "default",
                             boxShadow: "0 1px 2px rgba(15,23,42,.08)",
                             ...statusStyle,
                           }}
                         >
                           {statusLabel}
-                          <span style={{ fontSize: 9, lineHeight: 1, opacity: 0.9 }}>▾</span>
+                          {canEditLead ? <span style={{ fontSize: 9, lineHeight: 1, opacity: 0.9 }}>▾</span> : null}
                         </button>
                       </div>
-                      {statusMenuOpen && statusMenuRect ? createPortal(
+                      {canEditLead && statusMenuOpen && statusMenuRect ? createPortal(
                         <div
                           ref={statusMenuPopoverRef}
                           role="menu"
@@ -1541,8 +1666,9 @@ export default function LeadDetail() {
                   <button
                     type="button"
                     onClick={startEditUser}
+                    disabled={!canEditLead}
                     title="Edit"
-                    style={{ padding: "5px 10px", border: "1px solid #dddbda", borderRadius: 4, background: "#fff", fontSize: 12, color: "#0176d3", cursor: "pointer" }}
+                    style={{ padding: "5px 10px", border: "1px solid #dddbda", borderRadius: 4, background: "#fff", fontSize: 12, color: "#0176d3", cursor: canEditLead ? "pointer" : "default", opacity: canEditLead ? 1 : 0.6 }}
                   >
                     ✎ Edit
                   </button>
@@ -1680,7 +1806,7 @@ export default function LeadDetail() {
                       <strong>{formatMoney(payment.amount)}</strong>
                     </div>
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, fontSize: 11 }}>
-                      <span style={{ color: "#475569" }}>Rep 30%: <strong>{formatMoney(payment.amount * 0.3)}</strong></span>
+                      <span style={{ color: "#475569" }}>Rep paid ({repPaidCommissionRatePercent().toFixed(6)}%): <strong>{formatMoney(repPaidCommissionAmount(payment.amount))}</strong></span>
                       {canManageRepPayments ? (
                         <label style={{ display: "inline-flex", alignItems: "center", gap: 6, color: payment.repPaid ? "#15803d" : "#92400e", fontWeight: 700 }}>
                           <input
@@ -1758,26 +1884,28 @@ export default function LeadDetail() {
                     </button>
                   );
                 })}
-                <button
-                  type="button"
-                  onClick={() => setActiveJobTabId("__new__")}
-                  style={{
-                    border: activeJobTabId === "__new__" ? "1px solid #0176d3" : "1px solid #cbd5e1",
-                    borderBottom: activeJobTabId === "__new__" ? "2px solid #0176d3" : "1px solid #cbd5e1",
-                    background: activeJobTabId === "__new__" ? "#eaf5fe" : "#fff",
-                    color: activeJobTabId === "__new__" ? "#014486" : "#334155",
-                    borderRadius: 4,
-                    width: 34,
-                    fontSize: 16,
-                    fontWeight: 700,
-                    cursor: "pointer",
-                    whiteSpace: "nowrap",
-                  }}
-                  aria-label="Add job"
-                  title="Add job"
-                >
-                  +
-                </button>
+                {canEditJobs ? (
+                  <button
+                    type="button"
+                    onClick={() => setActiveJobTabId("__new__")}
+                    style={{
+                      border: activeJobTabId === "__new__" ? "1px solid #0176d3" : "1px solid #cbd5e1",
+                      borderBottom: activeJobTabId === "__new__" ? "2px solid #0176d3" : "1px solid #cbd5e1",
+                      background: activeJobTabId === "__new__" ? "#eaf5fe" : "#fff",
+                      color: activeJobTabId === "__new__" ? "#014486" : "#334155",
+                      borderRadius: 4,
+                      width: 34,
+                      fontSize: 16,
+                      fontWeight: 700,
+                      cursor: "pointer",
+                      whiteSpace: "nowrap",
+                    }}
+                    aria-label="Add job"
+                    title="Add job"
+                  >
+                    +
+                  </button>
+                ) : null}
               </div>
 
               {activeJobTabId !== "__new__" && leadJobs.some((j) => j.id === activeJobTabId) ? (() => {
@@ -1805,72 +1933,164 @@ export default function LeadDetail() {
                       </div>
                     </div>
 
-                    <div style={{ display: "grid", gap: 8, gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))" }}>
+                    <div style={{ display: "grid", gap: 8, gridTemplateColumns: "minmax(220px, 1fr) 170px 170px" }}>
                       <label style={{ display: "grid", gap: 4, fontSize: 11, color: "#475569" }}>
                         Company
                         <select
                           value={draft.company_id}
                           onChange={(e) => setJobDrafts((prev) => ({ ...prev, [job.id]: { ...draft, company_id: e.target.value } }))}
+                          disabled={!canEditJobs}
                           style={{ border: "1px solid #cbd5e1", borderRadius: 4, padding: "6px 8px", fontSize: 12, background: "#fff" }}
                         >
                           {companies.map((company) => <option key={company.id} value={company.id}>{company.name}</option>)}
                         </select>
                       </label>
                       <label style={{ display: "grid", gap: 4, fontSize: 11, color: "#475569" }}>
-                        Pickup Zip
-                        <input value={draft.pickup_zip} onChange={(e) => setJobDrafts((prev) => ({ ...prev, [job.id]: { ...draft, pickup_zip: e.target.value } }))} style={{ border: "1px solid #cbd5e1", borderRadius: 4, padding: "6px 8px", fontSize: 12 }} />
-                      </label>
-                      <label style={{ display: "grid", gap: 4, fontSize: 11, color: "#475569" }}>
-                        Delivery Zip
-                        <input value={draft.delivery_zip} onChange={(e) => setJobDrafts((prev) => ({ ...prev, [job.id]: { ...draft, delivery_zip: e.target.value } }))} style={{ border: "1px solid #cbd5e1", borderRadius: 4, padding: "6px 8px", fontSize: 12 }} />
-                      </label>
-                      <label style={{ display: "grid", gap: 4, fontSize: 11, color: "#475569" }}>
                         Move Date
-                        <input type="date" value={draft.move_date} onChange={(e) => setJobDrafts((prev) => ({ ...prev, [job.id]: { ...draft, move_date: e.target.value } }))} style={{ border: "1px solid #cbd5e1", borderRadius: 4, padding: "6px 8px", fontSize: 12 }} />
+                        <input type="date" value={draft.move_date} onChange={(e) => setJobDrafts((prev) => ({ ...prev, [job.id]: { ...draft, move_date: e.target.value } }))} disabled={!canEditJobs} style={{ border: "1px solid #cbd5e1", borderRadius: 4, padding: "6px 8px", fontSize: 12 }} />
                       </label>
                       <label style={{ display: "grid", gap: 4, fontSize: 11, color: "#475569" }}>
                         Booked Date
-                        <input type="date" value={draft.booked_move_date} onChange={(e) => setJobDrafts((prev) => ({ ...prev, [job.id]: { ...draft, booked_move_date: e.target.value } }))} style={{ border: "1px solid #cbd5e1", borderRadius: 4, padding: "6px 8px", fontSize: 12 }} />
+                        <input type="date" value={draft.booked_move_date} onChange={(e) => setJobDrafts((prev) => ({ ...prev, [job.id]: { ...draft, booked_move_date: e.target.value } }))} disabled={!canEditJobs} style={{ border: "1px solid #cbd5e1", borderRadius: 4, padding: "6px 8px", fontSize: 12 }} />
                       </label>
+                      <div style={{ gridColumn: "1 / -1", border: "1px solid #d8e6f4", borderRadius: 12, background: "linear-gradient(180deg, #f7fbff 0%, #ffffff 100%)", boxShadow: "0 2px 8px rgba(15,23,42,.05)", overflow: "hidden" }}>
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "10px 12px", borderBottom: "1px solid #e4eef8", background: "#edf5fd" }}>
+                          <strong style={{ fontSize: 12, color: "#0f172a", letterSpacing: "0.03em" }}>ROUTE</strong>
+                          <span style={{ fontSize: 11, color: "#0369a1", fontWeight: 700 }}>{draft.stops.length} middle stop{draft.stops.length === 1 ? "" : "s"}</span>
+                        </div>
+
+                        <div style={{ display: "grid", gap: 10, padding: 12 }}>
+                          <label style={{ display: "grid", gap: 4, fontSize: 12, fontWeight: 700, color: "#1e3a8a" }}>
+                            Pickup
+                            <input
+                              value={draft.pickup_zip}
+                              onChange={(e) => setJobDrafts((prev) => ({ ...prev, [job.id]: { ...draft, pickup_zip: e.target.value } }))}
+                              disabled={!canEditJobs}
+                              placeholder="Pickup address"
+                              style={{ border: "1px solid #bfdbfe", borderRadius: 8, padding: "8px 10px", fontSize: 13, background: "#fff" }}
+                            />
+                          </label>
+
+                          <div style={{ display: "grid", gap: 8 }}>
+                            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                              <div style={{ fontSize: 12, color: "#334155", fontWeight: 700 }}>Stops</div>
+                              {canEditJobs ? (
+                                <button
+                                  type="button"
+                                  onClick={() => setJobDrafts((prev) => ({ ...prev, [job.id]: { ...draft, stops: [...draft.stops, ""] } }))}
+                                  style={{ border: "1px solid #2563eb", background: "#fff", color: "#1d4ed8", borderRadius: 8, padding: "5px 10px", fontSize: 11, fontWeight: 700 }}
+                                >Add Stop</button>
+                              ) : null}
+                            </div>
+
+                            {draft.stops.length === 0 ? (
+                              <div style={{ border: "1px dashed #cbd5e1", borderRadius: 8, padding: "9px 10px", fontSize: 12, color: "#64748b", background: "#f8fafc" }}>No middle stops</div>
+                            ) : null}
+
+                            {draft.stops.map((address, index) => (
+                              <div
+                                key={`stop-${index}`}
+                                draggable={canEditJobs}
+                                onDragStart={(e) => {
+                                  e.dataTransfer.setData("text/plain", String(index));
+                                  e.dataTransfer.effectAllowed = "move";
+                                }}
+                                onDragOver={(e) => e.preventDefault()}
+                                onDrop={(e) => {
+                                  e.preventDefault();
+                                  const from = Number(e.dataTransfer.getData("text/plain"));
+                                  if (!Number.isInteger(from) || from < 0 || from >= draft.stops.length || from === index) return;
+                                  const next = [...draft.stops];
+                                  const [moved] = next.splice(from, 1);
+                                  next.splice(index, 0, moved);
+                                  setJobDrafts((prev) => ({ ...prev, [job.id]: { ...draft, stops: next } }));
+                                }}
+                                style={{ display: "grid", gridTemplateColumns: "28px 1fr auto", gap: 8, alignItems: "center", border: "1px solid #dbe4ef", borderRadius: 8, background: "#fff", padding: 8 }}
+                              >
+                                <span title="Drag" style={{ width: 24, height: 24, borderRadius: 6, border: "1px solid #cbd5e1", color: "#64748b", fontSize: 12, fontWeight: 800, display: "inline-flex", alignItems: "center", justifyContent: "center", cursor: canEditJobs ? "grab" : "default", userSelect: "none" }}>⋮⋮</span>
+                                <input
+                                  value={address}
+                                  onChange={(e) => {
+                                    const next = [...draft.stops];
+                                    next[index] = e.target.value;
+                                    setJobDrafts((prev) => ({ ...prev, [job.id]: { ...draft, stops: next } }));
+                                  }}
+                                  disabled={!canEditJobs}
+                                  placeholder="Stop address"
+                                  style={{ border: "1px solid #cbd5e1", borderRadius: 8, padding: "8px 10px", fontSize: 13, background: "#fff" }}
+                                />
+                                {canEditJobs ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const next = draft.stops.filter((_, i) => i !== index);
+                                      setJobDrafts((prev) => ({ ...prev, [job.id]: { ...draft, stops: next } }));
+                                    }}
+                                    style={{ border: "1px solid #fecaca", background: "#fff", color: "#b91c1c", borderRadius: 8, padding: "5px 10px", fontSize: 11, fontWeight: 700 }}
+                                  >Remove</button>
+                                ) : null}
+                              </div>
+                            ))}
+                          </div>
+
+                          <label style={{ display: "grid", gap: 4, fontSize: 12, fontWeight: 700, color: "#166534" }}>
+                            Delivery
+                            <input
+                              value={draft.delivery_zip}
+                              onChange={(e) => setJobDrafts((prev) => ({ ...prev, [job.id]: { ...draft, delivery_zip: e.target.value } }))}
+                              disabled={!canEditJobs}
+                              placeholder="Delivery address"
+                              style={{ border: "1px solid #bbf7d0", borderRadius: 8, padding: "8px 10px", fontSize: 13, background: "#fff" }}
+                            />
+                          </label>
+                        </div>
+                      </div>
                     </div>
 
-                    <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
-                      <button type="button" onClick={() => void saveJob(job.id)} disabled={busy} style={{ border: "1px solid #0176d3", background: "#0176d3", color: "#fff", borderRadius: 4, padding: "5px 10px", fontSize: 12, fontWeight: 600 }}>
-                        {savingJobId === job.id ? "Saving..." : "Save Job"}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (!primary && window.confirm("Delete this job?")) void deleteJob(job.id);
-                        }}
-                        disabled={busy || primary}
-                        style={{ border: "1px solid #dddbda", background: "#fff", color: primary ? "#94a3b8" : "#ba0517", borderRadius: 4, padding: "5px 10px", fontSize: 12 }}
-                      >
-                        {deletingJobId === job.id ? "Deleting..." : "Delete"}
-                      </button>
-                    </div>
+                    {canEditJobs ? (
+                      <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
+                        <button type="button" onClick={() => void saveJob(job.id)} disabled={busy} style={{ border: "1px solid #0176d3", background: "#0176d3", color: "#fff", borderRadius: 4, padding: "5px 10px", fontSize: 12, fontWeight: 600 }}>
+                          {savingJobId === job.id ? "Saving..." : "Save Job"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (!primary && window.confirm("Delete this job?")) void deleteJob(job.id);
+                          }}
+                          disabled={busy || primary}
+                          style={{ border: "1px solid #dddbda", background: "#fff", color: primary ? "#94a3b8" : "#ba0517", borderRadius: 4, padding: "5px 10px", fontSize: 12 }}
+                        >
+                          {deletingJobId === job.id ? "Deleting..." : "Delete"}
+                        </button>
+                      </div>
+                    ) : null}
 
                     <div style={{ marginTop: 12, border: "1px solid #d8dde6", borderRadius: 8, background: "#f8fafc" }}>
                       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "8px 10px", borderBottom: "1px solid #e2e8f0" }}>
                         <div style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
                           <span style={{ fontSize: 14 }}>📎</span>
                           <strong style={{ fontSize: 12, color: "#0f172a", letterSpacing: "0.02em" }}>{`Job ${job.job_order} Files`}</strong>
+                          <span style={{ fontSize: 10, color: "#334155", fontWeight: 700, border: "1px solid #cbd5e1", borderRadius: 999, padding: "2px 7px", background: "#fff" }}>
+                            {attachments.length} total
+                          </span>
                         </div>
                         <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                          <label style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 8, border: "1px solid #d8dde6", borderRadius: 6, padding: "5px 9px", fontSize: 11, fontWeight: 700, cursor: uploadingCount > 0 ? "default" : "pointer", opacity: uploadingCount > 0 ? 0.7 : 1, background: "#fff", whiteSpace: "nowrap" }}>
-                            <input
-                              type="file"
-                              multiple
-                              disabled={uploadingCount > 0}
-                              style={{ display: "none" }}
-                              onChange={(e) => {
-                                const files = Array.from(e.target.files || []);
-                                void uploadAttachments(files);
-                                e.currentTarget.value = "";
-                              }}
-                            />
-                            {uploadingCount > 0 ? `Uploading ${uploadingCount}...` : "Upload"}
-                          </label>
+                          {canEditJobs ? (
+                            <label style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 8, border: "1px solid #d8dde6", borderRadius: 6, padding: "5px 9px", fontSize: 11, fontWeight: 700, cursor: uploadingCount > 0 ? "default" : "pointer", opacity: uploadingCount > 0 ? 0.7 : 1, background: "#fff", whiteSpace: "nowrap" }}>
+                              <input
+                                type="file"
+                                multiple
+                                disabled={uploadingCount > 0}
+                                style={{ display: "none" }}
+                                onChange={(e) => {
+                                  const files = Array.from(e.target.files || []);
+                                  void uploadAttachments(files);
+                                  e.currentTarget.value = "";
+                                }}
+                              />
+                              {uploadingCount > 0 ? `Uploading ${uploadingCount}...` : "Upload"}
+                            </label>
+                          ) : null}
                           <button
                             type="button"
                             onClick={() => setFilesModalOpen(true)}
@@ -1886,18 +2106,38 @@ export default function LeadDetail() {
                         {attachmentsLoading ? <div style={{ color: "#64748b", fontSize: 12 }}>Loading files...</div> : null}
                         {!attachmentsLoading && quickAttachments.length === 0 ? <div style={{ color: "#706e6b", fontSize: 12 }}>No files for this job yet.</div> : null}
                         {!attachmentsLoading && quickAttachments.length > 0 ? (
-                          <div style={{ display: "grid", gap: 5 }}>
-                            {quickAttachments.slice(0, 3).map((attachment) => (
+                          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 7 }}>
+                            {quickAttachments.map((attachment) => (
                               <button
                                 key={attachment.id}
                                 type="button"
                                 onClick={() => void openPreview(attachment.id, attachment.file_name, attachment.content_type)}
-                                style={{ border: "1px solid #e2e8f0", background: "#fff", borderRadius: 6, padding: "5px 7px", fontSize: 11, color: "#334155", textAlign: "left", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: "pointer" }}
+                                style={{ border: "1px solid #dbe4ef", background: "#fff", borderRadius: 8, padding: "8px", fontSize: 11, color: "#334155", textAlign: "left", cursor: "pointer", display: "grid", gap: 4 }}
                                 title={attachment.file_name}
                               >
-                                {attachment.file_name}
+                                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                                  <span style={{ fontSize: 10, fontWeight: 800, color: "#0f172a", border: "1px solid #cbd5e1", borderRadius: 999, padding: "1px 6px", background: "#f8fafc", flexShrink: 0 }}>
+                                    {fileIcon(attachment.file_name)}
+                                  </span>
+                                  <span style={{ fontSize: 10, color: "#64748b" }}>{Math.max(1, Math.round((attachment.file_size || 0) / 1024))} KB</span>
+                                </div>
+                                <div style={{ fontSize: 12, color: "#0f172a", fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                  {attachment.file_name}
+                                </div>
+                                <div style={{ fontSize: 10, color: "#64748b" }}>
+                                  {attachment.created_at ? new Date(attachment.created_at).toLocaleDateString() : ""}
+                                </div>
                               </button>
                             ))}
+                            {attachments.length > quickAttachments.length ? (
+                              <button
+                                type="button"
+                                onClick={() => setFilesModalOpen(true)}
+                                style={{ border: "1px dashed #94a3b8", background: "#f8fafc", borderRadius: 8, padding: "8px", fontSize: 11, color: "#334155", textAlign: "center", fontWeight: 700, cursor: "pointer" }}
+                              >
+                                View all {attachments.length} files
+                              </button>
+                            ) : null}
                           </div>
                         ) : null}
                       </div>
@@ -1956,23 +2196,16 @@ export default function LeadDetail() {
             </div>
           ) : null}
 
-          {activeJobTabId === "__new__" ? (
+          {activeJobTabId === "__new__" && canEditJobs ? (
           <div style={{ borderTop: "1px solid #e2e8f0", paddingTop: 10, display: "grid", gap: 8 }}>
             <strong style={{ fontSize: 12, color: "#334155" }}>Add Job</strong>
-            <div style={{ display: "grid", gap: 8, gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))" }}>
+            <div style={{ display: "grid", gap: 10 }}>
+              <div style={{ display: "grid", gap: 8, gridTemplateColumns: "minmax(220px, 1fr) 170px 170px" }}>
               <label style={{ display: "grid", gap: 4, fontSize: 11, color: "#475569" }}>
                 Company
                 <select value={newJobDraft.company_id} onChange={(e) => setNewJobDraft((prev) => ({ ...prev, company_id: e.target.value }))} style={{ border: "1px solid #cbd5e1", borderRadius: 4, padding: "6px 8px", fontSize: 12, background: "#fff" }}>
                   {companies.map((company) => <option key={company.id} value={company.id}>{company.name}</option>)}
                 </select>
-              </label>
-              <label style={{ display: "grid", gap: 4, fontSize: 11, color: "#475569" }}>
-                Pickup Zip
-                <input value={newJobDraft.pickup_zip} onChange={(e) => setNewJobDraft((prev) => ({ ...prev, pickup_zip: e.target.value }))} style={{ border: "1px solid #cbd5e1", borderRadius: 4, padding: "6px 8px", fontSize: 12 }} />
-              </label>
-              <label style={{ display: "grid", gap: 4, fontSize: 11, color: "#475569" }}>
-                Delivery Zip
-                <input value={newJobDraft.delivery_zip} onChange={(e) => setNewJobDraft((prev) => ({ ...prev, delivery_zip: e.target.value }))} style={{ border: "1px solid #cbd5e1", borderRadius: 4, padding: "6px 8px", fontSize: 12 }} />
               </label>
               <label style={{ display: "grid", gap: 4, fontSize: 11, color: "#475569" }}>
                 Move Date
@@ -1982,6 +2215,93 @@ export default function LeadDetail() {
                 Booked Date
                 <input type="date" value={newJobDraft.booked_move_date} onChange={(e) => setNewJobDraft((prev) => ({ ...prev, booked_move_date: e.target.value }))} style={{ border: "1px solid #cbd5e1", borderRadius: 4, padding: "6px 8px", fontSize: 12 }} />
               </label>
+              </div>
+              <div style={{ gridColumn: "1 / -1", border: "1px solid #d8e6f4", borderRadius: 12, background: "linear-gradient(180deg, #f7fbff 0%, #ffffff 100%)", boxShadow: "0 2px 8px rgba(15,23,42,.05)", overflow: "hidden" }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "10px 12px", borderBottom: "1px solid #e4eef8", background: "#edf5fd" }}>
+                  <strong style={{ fontSize: 12, color: "#0f172a", letterSpacing: "0.03em" }}>ROUTE</strong>
+                  <span style={{ fontSize: 11, color: "#0369a1", fontWeight: 700 }}>{newJobDraft.stops.length} middle stop{newJobDraft.stops.length === 1 ? "" : "s"}</span>
+                </div>
+
+                <div style={{ display: "grid", gap: 10, padding: 12 }}>
+                  <label style={{ display: "grid", gap: 4, fontSize: 12, fontWeight: 700, color: "#1e3a8a" }}>
+                    Pickup
+                    <input
+                      type="text"
+                      value={newJobDraft.pickup_zip}
+                      onChange={(e) => setNewJobDraft((prev) => ({ ...prev, pickup_zip: e.target.value }))}
+                      placeholder="Pickup address"
+                      style={{ border: "1px solid #bfdbfe", borderRadius: 8, padding: "8px 10px", fontSize: 13, background: "#fff" }}
+                    />
+                  </label>
+
+                  <div style={{ display: "grid", gap: 8 }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                      <div style={{ fontSize: 12, color: "#334155", fontWeight: 700 }}>Stops</div>
+                      <button
+                        type="button"
+                        onClick={() => setNewJobDraft((prev) => ({ ...prev, stops: [...prev.stops, ""] }))}
+                        style={{ border: "1px solid #2563eb", background: "#fff", color: "#1d4ed8", borderRadius: 8, padding: "5px 10px", fontSize: 11, fontWeight: 700 }}
+                      >Add Stop</button>
+                    </div>
+
+                    {newJobDraft.stops.length === 0 ? (
+                      <div style={{ border: "1px dashed #cbd5e1", borderRadius: 8, padding: "9px 10px", fontSize: 12, color: "#64748b", background: "#f8fafc" }}>No middle stops</div>
+                    ) : null}
+
+                    {newJobDraft.stops.map((address, index) => (
+                      <div
+                        key={`new-stop-${index}`}
+                        draggable
+                        onDragStart={(e) => {
+                          e.dataTransfer.setData("text/plain", String(index));
+                          e.dataTransfer.effectAllowed = "move";
+                        }}
+                        onDragOver={(e) => e.preventDefault()}
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          const from = Number(e.dataTransfer.getData("text/plain"));
+                          if (!Number.isInteger(from) || from < 0 || from >= newJobDraft.stops.length || from === index) return;
+                          const next = [...newJobDraft.stops];
+                          const [moved] = next.splice(from, 1);
+                          next.splice(index, 0, moved);
+                          setNewJobDraft((prev) => ({ ...prev, stops: next }));
+                        }}
+                        style={{ display: "grid", gridTemplateColumns: "28px 1fr auto", gap: 8, alignItems: "center", border: "1px solid #dbe4ef", borderRadius: 8, background: "#fff", padding: 8 }}
+                      >
+                        <span title="Drag" style={{ width: 24, height: 24, borderRadius: 6, border: "1px solid #cbd5e1", color: "#64748b", fontSize: 12, fontWeight: 800, display: "inline-flex", alignItems: "center", justifyContent: "center", cursor: "grab", userSelect: "none" }}>⋮⋮</span>
+                        <input
+                          value={address}
+                          onChange={(e) => {
+                            const next = [...newJobDraft.stops];
+                            next[index] = e.target.value;
+                            setNewJobDraft((prev) => ({ ...prev, stops: next }));
+                          }}
+                          placeholder="Stop address"
+                          style={{ border: "1px solid #cbd5e1", borderRadius: 8, padding: "8px 10px", fontSize: 13, background: "#fff" }}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setNewJobDraft((prev) => ({ ...prev, stops: prev.stops.filter((_, i) => i !== index) }));
+                          }}
+                          style={{ border: "1px solid #fecaca", background: "#fff", color: "#b91c1c", borderRadius: 8, padding: "5px 10px", fontSize: 11, fontWeight: 700 }}
+                        >Remove</button>
+                      </div>
+                    ))}
+                  </div>
+
+                  <label style={{ display: "grid", gap: 4, fontSize: 12, fontWeight: 700, color: "#166534" }}>
+                    Delivery
+                    <input
+                      type="text"
+                      value={newJobDraft.delivery_zip}
+                      onChange={(e) => setNewJobDraft((prev) => ({ ...prev, delivery_zip: e.target.value }))}
+                      placeholder="Delivery address"
+                      style={{ border: "1px solid #bbf7d0", borderRadius: 8, padding: "8px 10px", fontSize: 13, background: "#fff" }}
+                    />
+                  </label>
+                </div>
+              </div>
             </div>
             <div>
               <button type="button" onClick={() => void addJob()} disabled={addingJob} style={{ border: "1px solid #0176d3", background: "#0176d3", color: "#fff", borderRadius: 4, padding: "6px 12px", fontSize: 12, fontWeight: 600 }}>
