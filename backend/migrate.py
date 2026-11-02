@@ -47,6 +47,24 @@ def migrate() -> None:
             connection.execute(text('ALTER TABLE pricing_rates ADD CONSTRAINT uq_pricing_rates_plan_destination_band '
                                     'UNIQUE (plan_id, destination, band_label)'))
         connection.execute(text('DROP INDEX IF EXISTS ix_pricing_rates_plan_id'))
+        # Origin destination & administration Fee moves from an "All Jobs" service row to the plan.
+        if not connection.execute(text("""
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'pricing_plans' AND column_name = 'admin_fee'""")).first():
+            connection.execute(text('ALTER TABLE pricing_plans ADD COLUMN admin_fee NUMERIC(12, 2)'))
+            moved = 0
+            for plan_id, in connection.execute(text('SELECT id FROM pricing_plans')).all():
+                rows = connection.execute(text("""
+                    SELECT id, rate_text FROM pricing_services
+                    WHERE plan_id = :plan_id AND lower(name) LIKE '%all jobs%'"""), {'plan_id': plan_id}).all()
+                amount = rows[0].rate_text.strip().lstrip('$').strip() if len(rows) == 1 else ''
+                # Only a single plain amount is moved; anything else stays a service and keeps working.
+                if amount.replace('.', '', 1).isdigit():
+                    connection.execute(text('UPDATE pricing_plans SET admin_fee = :amount WHERE id = :plan_id'),
+                                       {'amount': amount, 'plan_id': plan_id})
+                    connection.execute(text('DELETE FROM pricing_services WHERE id = :id'), {'id': rows[0].id})
+                    moved += 1
+            logger.info("Moved the administration fee to %s pricing plans", moved)
         connection.execute(text('ALTER TABLE inventory_edit_items ADD COLUMN IF NOT EXISTS set_id VARCHAR(36)'))
         connection.execute(text('ALTER TABLE inventory_edit_items ADD COLUMN IF NOT EXISTS set_name VARCHAR(200)'))
         from followup_tasks import install as install_followup_tasks

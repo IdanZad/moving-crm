@@ -110,6 +110,7 @@ def _plan_summary_rows(plans: list[PricingPlan], db: Session) -> list[dict]:
             "pickup_regions": pickup_summary(pickup_areas(plan)),
             "pickup_areas": pickup_areas(plan),
             "fuel_percent": float(plan.fuel_percent) if plan.fuel_percent is not None else None,
+            "admin_fee": float(plan.admin_fee) if plan.admin_fee is not None else None,
             "active": bool(plan.active),
             "rate_count": 0,
             "rule_count": 0,
@@ -271,6 +272,7 @@ class PlanUpdate(BaseModel):
     pickup_regions: str = ""
     pickup_areas: list[PickupArea] | None = Field(default=None, max_length=51)
     fuel_percent: float | None = Field(default=None, ge=0, le=100)
+    admin_fee: float | None = Field(default=None, ge=0)
     active: bool = True
     rules: list[RuleInput]
     rates: list[RateInput]
@@ -892,6 +894,21 @@ def compute_plan_calculation(plan: PricingPlan, body: CalculationInput) -> dict:
             "automatic": False,
             "applies": True,
             "quantity_label": "",
+        })
+    if plan.admin_fee is not None:
+        charges.append({
+            "id": "admin_fee",
+            "name": "Origin destination & administration Fee",
+            "description": f"${float(plan.admin_fee):,.2f} per job",
+            "calculation_type": "fixed",
+            "rate": float(plan.admin_fee),
+            "default_selected": True,
+            "automatic": False,
+            "applies": True,
+            "quantity_label": "",
+            "free_months": 0,
+            "minimum_amount": 0,
+            "minimum_cubic_feet": 0,
         })
     def collect(key, name, calculate):
         try:
@@ -2024,6 +2041,7 @@ def update_pricing_plan(
             raise HTTPException(400, 'Add each state once and enter its ZIP codes in the same row')
         set_pickup_areas(plan, [area.model_dump() for area in body.pickup_areas])
     plan.fuel_percent = body.fuel_percent
+    plan.admin_fee = getattr(body, 'admin_fee', None)
     plan.price_valid_days = getattr(body, 'price_valid_days', 7)
     plan.active = body.active
     retained_rules = []
@@ -2086,6 +2104,7 @@ class SectionUpdate(BaseModel):
     rules: list[RuleInput] | None = None
     name: str | None = Field(default=None, min_length=1)
     fuel_percent: float | None = Field(default=None, ge=0, le=100)
+    admin_fee: float | None = Field(default=None, ge=0)
     price_valid_days: int | None = Field(default=None, ge=1, le=3650)
 
 
@@ -2100,7 +2119,7 @@ def update_pricing_section(plan_id: str, section: str, body: SectionUpdate, user
                 'shuttle': SHUTTLE_PREFIX, 'packing': PACKING_CARD_PREFIX, 'materials': PACKING_CARD_PREFIX,
                 'bulkyItems': BULKY_ITEM_MARKER}
     field = 'rates' if section == 'rates' else 'pickup_areas' if section == 'pickup' else 'services'
-    fields = {'services', 'rules'} if section == 'services' else {'name', 'fuel_percent', 'price_valid_days'} if section == 'details' else {field}
+    fields = {'services', 'rules'} if section == 'services' else {'name', 'fuel_percent', 'admin_fee', 'price_valid_days'} if section == 'details' else {field}
     if section not in {'rates', 'pickup', 'services', 'details', *prefixes} or body.model_fields_set != fields:
         raise HTTPException(422, 'Send only the fields for this pricing section.')
     if section == 'details':
@@ -2108,6 +2127,7 @@ def update_pricing_section(plan_id: str, section: str, body: SectionUpdate, user
             raise HTTPException(422, 'Name and price validity are required.')
         plan.name = body.name.strip()
         plan.fuel_percent = body.fuel_percent
+        plan.admin_fee = body.admin_fee
         plan.price_valid_days = body.price_valid_days
     elif section == 'services':
         belongs = lambda row: not row.comments.startswith(tuple(prefixes.values()))

@@ -61,8 +61,8 @@ class SectionSaveTests(unittest.TestCase):
 
     def test_details_save_preserves_all_rows(self):
         services, rules, rates = self.plan.services, self.plan.rules, self.plan.rates
-        self.save('details', name='Updated', fuel_percent=10, price_valid_days=14)
-        self.assertEqual((self.plan.name, self.plan.fuel_percent, self.plan.price_valid_days), ('Updated', 10, 14))
+        self.save('details', name='Updated', fuel_percent=10, admin_fee=199, price_valid_days=14)
+        self.assertEqual((self.plan.name, self.plan.fuel_percent, self.plan.admin_fee, self.plan.price_valid_days), ('Updated', 10, 199, 14))
         self.assertIs(self.plan.services, services)
         self.assertIs(self.plan.rules, rules)
         self.assertIs(self.plan.rates, rates)

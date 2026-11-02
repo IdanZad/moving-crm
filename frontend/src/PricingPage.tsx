@@ -21,7 +21,7 @@ import { calculateDiscounts, type Discount as CustomDiscount } from './pricingDi
 
 type PlanSummary = {
   id: string; company_name: string; name: string; pickup_regions: string; pickup_areas?: PickupArea[];
-  fuel_percent: number | null; price_valid_days: number; rate_count: number; rule_count: number;
+  fuel_percent: number | null; admin_fee: number | null; price_valid_days: number; rate_count: number; rule_count: number;
   service_count: number; updated_at: string;
 };
 type Rule = { id?: string; category: string; title: string; description: string };
@@ -672,11 +672,11 @@ export default function PricingPage() {
     try {
       const response = await fetch(`${API_BASE}/api/pricing/${draft.id}/sections/details`, {
         method: 'PUT', headers: {...authHeaders(token), 'Content-Type': 'application/json'},
-        body: JSON.stringify({name: draft.name, fuel_percent: draft.fuel_percent, price_valid_days: draft.price_valid_days ?? 7}),
+        body: JSON.stringify({name: draft.name, fuel_percent: draft.fuel_percent, admin_fee: draft.admin_fee, price_valid_days: draft.price_valid_days ?? 7}),
       });
       const result = await response.json();
       if (!response.ok) throw new Error(formatApiError(result, 'Could not save price sheet details'));
-      const merge = (current: Plan | null) => current ? {...current, name: result.name, fuel_percent: result.fuel_percent, price_valid_days: result.price_valid_days} : current;
+      const merge = (current: Plan | null) => current ? {...current, name: result.name, fuel_percent: result.fuel_percent, admin_fee: result.admin_fee, price_valid_days: result.price_valid_days} : current;
       setPlan(merge); setDraft(merge); setEditing(false);
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not save details'); }
     finally { setSaving(false); }
@@ -820,7 +820,7 @@ export default function PricingPage() {
           <div className="pricing-actions">
             {editing ? (
               <>
-                <button className="slds-button secondary" onClick={() => { setDraft(current => current && plan ? {...current, name: plan.name, fuel_percent: plan.fuel_percent, price_valid_days: plan.price_valid_days} : current); setEditing(false); }}>Cancel changes</button>
+                <button className="slds-button secondary" onClick={() => { setDraft(current => current && plan ? {...current, name: plan.name, fuel_percent: plan.fuel_percent, admin_fee: plan.admin_fee, price_valid_days: plan.price_valid_days} : current); setEditing(false); }}>Cancel changes</button>
                 <button className="slds-button primary" disabled={saving} onClick={() => void save()}>{saving ? "Saving…" : "Save changes"}</button>
               </>
             ) : <button className="slds-button primary" onClick={() => setEditing(true)}>Edit details</button>}
@@ -829,6 +829,7 @@ export default function PricingPage() {
                 <div className="pricing-kpis">
 <div><span>Price valid for (days)</span>{editing ? <input aria-label="Price valid for (days)" type="number" min="1" max="3650" step="1" value={active.price_valid_days ?? 7} onChange={event => patchDraft({ price_valid_days: Number(event.target.value) })} /> : <strong>{active.price_valid_days ?? 7}</strong>}</div>
                   <div><span>Fuel</span>{editing ? <input type="number" step="0.1" value={active.fuel_percent ?? ""} onChange={(e) => patchDraft({ fuel_percent: e.target.value === "" ? null : Number(e.target.value) })} /> : <strong>{active.fuel_percent == null ? "See rules" : `${active.fuel_percent}%`}</strong>}</div>
+                  <div><span>Origin destination &amp; administration Fee</span>{editing ? <input type="number" min="0" step="0.01" value={active.admin_fee ?? ""} onChange={(e) => patchDraft({ admin_fee: e.target.value === "" ? null : Number(e.target.value) })} /> : <strong>{active.admin_fee == null ? "—" : money(active.admin_fee)}</strong>}</div>
                   <div><span>Destinations</span><strong>{destinations.length}</strong></div>
                   <div><span>Services</span><strong>{active.services.length}</strong></div>
                 </div>
@@ -838,7 +839,8 @@ export default function PricingPage() {
                 <PickupAreasCard areas={active.pickup_areas || []} editing={editingSection('pickup')} onChange={pickup_areas => patchDraft({ pickup_areas })} />
               </PricingSection>
 
-              <section className="pricing-card pricing-calculator">
+              {/* Shown only when pricing a job opened from a lead. */}
+              <section className="pricing-card pricing-calculator" hidden={!jobContext}>
                 <div><span className="eyebrow">Job pricing</span><h2>Calculate price</h2></div>
                 {jobContext && !destination ? (
                   <div className="pricing-inline-unavailable">

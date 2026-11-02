@@ -71,7 +71,7 @@ def test_bad_charge_does_not_block_transport_or_other_charges():
     scope = load_calculator()
     def charge(name, rate):
         return dict(id=name, name=name, description='', rate=rate, calculation_type='fixed', default_selected=True, automatic=False, applies=True)
-    plan = Row(fuel_percent=None, services=[], rules=[Row(id='bad', charge=charge('Storage', 'invalid')), Row(id='good', charge=charge('Handling', '25'))])
+    plan = Row(fuel_percent=None, admin_fee=None, services=[], rules=[Row(id='bad', charge=charge('Storage', 'invalid')), Row(id='good', charge=charge('Handling', '25'))])
     body = Row(cubic_feet=100, destination='MD', move_date='', quantities={}, bulky_items=[], selected_charges={}, manual_amounts={}, available_date='', delivery_address='')
     result = scope['compute_plan_calculation'](plan, body)
     assert result['total'] == 125
@@ -86,7 +86,7 @@ def test_access_service_failure_keeps_other_services():
         raise ValueError('Missing elevator rate')
     scope['elevator_quote'] = fail
     scope['storage_quote'] = lambda *args: dict(valid=True, total=40, description='Storage')
-    plan = Row(fuel_percent=None, services=[], rules=[])
+    plan = Row(fuel_percent=None, admin_fee=None, services=[], rules=[])
     body = Row(cubic_feet=100, destination='MD', move_date='', quantities={}, bulky_items=[], selected_charges={}, manual_amounts={}, available_date='', delivery_address='')
     result = scope['compute_plan_calculation'](plan, body)
     assert result['total'] == 140
@@ -129,7 +129,7 @@ def test_failed_transport_marks_dependent_fuel_pending_but_keeps_flat_charge():
         raise ValueError('Transportation rate missing')
     scope['_transportation_price'] = fail
     charge = dict(id='handling', name='Handling', description='', rate=25, calculation_type='fixed', default_selected=True, automatic=False, applies=True)
-    plan = Row(fuel_percent=10, services=[], rules=[Row(id='handling', charge=charge)])
+    plan = Row(fuel_percent=10, admin_fee=None, services=[], rules=[Row(id='handling', charge=charge)])
     body = Row(cubic_feet=100, destination='MD', move_date='', quantities={}, bulky_items=[], selected_charges={}, manual_amounts={}, available_date='', delivery_address='')
     result = scope['compute_plan_calculation'](plan, body)
     assert result['total'] == 25
