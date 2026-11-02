@@ -26,8 +26,8 @@ from delivery_fees import ORIGIN_FEE_PREFIX, origin_fee, origin_fee_card, DELIVE
 from storage_pricing import STORAGE_PREFIX, StorageCard, storage_card, storage_quote
 from extra_stops import EXTRA_STOPS_PREFIX, ExtraStopsCard, stops_card, save_stops_card
 from elevator_pricing import ELEVATOR_PREFIX, ElevatorCard, elevator_card, elevator_quote, plan_elevator_card, save_elevator_card
-from long_carry_pricing import LONG_CARRY_PREFIX, LongCarryCard, long_carry_card, long_carry_quote
-from stairs_pricing import STAIRS_PREFIX, StairsCard, stairs_card, stairs_quote
+from long_carry_pricing import LONG_CARRY_PREFIX, LongCarryCard, long_carry_card, long_carry_quote, plan_long_carry_card, save_long_carry_card
+from stairs_pricing import STAIRS_PREFIX, StairsCard, stairs_card, stairs_quote, plan_stairs_card, save_stairs_card
 from models import (
     LocalPricingRoute,
     PricingPlan,
@@ -980,7 +980,7 @@ def compute_plan_calculation(plan: PricingPlan, body: CalculationInput, customer
     except Exception as error:
         failures.append(pending_line('elevator', 'Elevator', error))
     try:
-        config = long_carry_card(plan.services)
+        config = plan_long_carry_card(plan)
         long_carry = long_carry_quote(config, {}, {}, cubic_feet, _service_billable_volume(plan, body.destination, 0))
         if long_carry:
             saved = {row['location']: {'revision': row['revision'], 'distance_feet': getattr(body, row['location'] + '_carry_feet')} for row in long_carry['locations']}
@@ -997,7 +997,7 @@ def compute_plan_calculation(plan: PricingPlan, body: CalculationInput, customer
     except Exception as error:
         failures.append(pending_line('long-carry', 'Long carry', error))
     try:
-        config = stairs_card(plan.services)
+        config = plan_stairs_card(plan)
         stairs = stairs_quote(config, {}, {}, cubic_feet, _service_billable_volume(plan, body.destination, 0))
         if stairs:
             saved = {row['location']: {'revision': row['revision'], 'flights': getattr(body, row['location'] + '_flights')} for row in stairs['locations']}
@@ -1393,7 +1393,7 @@ def customer_long_carry(lead, job, db, plan=None, move_type=None):
     state, zip_code = delivery_location(job.delivery_zip or '')
     destination = _plan_destination_for_delivery(plan, job.delivery_zip or '', state, zip_code)
     saved = json.loads(job.customer_packing_package or '{}').get('long_carry', {})
-    card = long_carry_card(plan.services)
+    card = plan_long_carry_card(plan)
     addresses = {'pickup': job.pickup_zip or '', 'delivery': job.delivery_zip or ''}
     volume = _rounded_cubic_feet(lead.volume)
     minimum = _service_billable_volume(plan, destination, 0)
@@ -1448,7 +1448,7 @@ def customer_stairs(lead, job, db, plan=None, move_type=None):
     state, zip_code = delivery_location(job.delivery_zip or '')
     destination = _plan_destination_for_delivery(plan, job.delivery_zip or '', state, zip_code)
     saved = json.loads(job.customer_packing_package or '{}').get('stairs', {})
-    return stairs_quote(stairs_card(plan.services), {'pickup': job.pickup_zip or '', 'delivery': job.delivery_zip or ''},
+    return stairs_quote(plan_stairs_card(plan), {'pickup': job.pickup_zip or '', 'delivery': job.delivery_zip or ''},
                         saved, _rounded_cubic_feet(lead.volume), _service_billable_volume(plan, destination, 0))
 
 
@@ -1902,13 +1902,13 @@ def calculate_pricing(
     except Exception as error:
         input_failures.append(pending_line('storage', 'Storage', error))
     try:
-        stairs = stairs_card(plan.services)
+        stairs = plan_stairs_card(plan)
         if stairs and stairs.enabled and (body.pickup_flights is None or body.delivery_flights is None):
             raise HTTPException(422, 'Enter the outdoor/building flights at pickup and delivery, including zero when there are no stairs.')
     except Exception as error:
         input_failures.append(pending_line('stairs', 'Stairs', error))
     try:
-        carry = long_carry_card(plan.services)
+        carry = plan_long_carry_card(plan)
         if carry and carry.enabled and (body.pickup_carry_feet is None or body.delivery_carry_feet is None):
             raise HTTPException(422, 'Enter the carrying distance at pickup and delivery in feet.')
     except Exception as error:
@@ -2005,6 +2005,12 @@ def update_pricing_plan(
     elevator_cards = [row for row in body.services if row.comments.startswith(ELEVATOR_PREFIX)]
     body.services = [row for row in body.services if not row.comments.startswith(ELEVATOR_PREFIX)]
     save_elevator_card(plan, ElevatorCard.model_validate_json(elevator_cards[0].comments[len(ELEVATOR_PREFIX):]) if elevator_cards else None)
+    carry_cards = [row for row in body.services if row.comments.startswith(LONG_CARRY_PREFIX)]
+    body.services = [row for row in body.services if not row.comments.startswith(LONG_CARRY_PREFIX)]
+    save_long_carry_card(plan, LongCarryCard.model_validate_json(carry_cards[0].comments[len(LONG_CARRY_PREFIX):]) if carry_cards else None)
+    stairs_cards = [row for row in body.services if row.comments.startswith(STAIRS_PREFIX)]
+    body.services = [row for row in body.services if not row.comments.startswith(STAIRS_PREFIX)]
+    save_stairs_card(plan, StairsCard.model_validate_json(stairs_cards[0].comments[len(STAIRS_PREFIX):]) if stairs_cards else None)
     service_updates = prepare_service_updates(list(plan.services), body.services)
     from pricing_row_updates import prepare_row_updates
     rule_updates = prepare_row_updates(list(plan.rules), body.rules, ('category', 'title'), ('description',))
@@ -2131,6 +2137,14 @@ def update_pricing_section(plan_id: str, section: str, body: SectionUpdate, user
         if body.services is None or any(not row.comments.startswith(ELEVATOR_PREFIX) for row in body.services):
             raise HTTPException(422, 'Service belongs to a different pricing section.')
         save_elevator_card(plan, ElevatorCard.model_validate_json(body.services[0].comments[len(ELEVATOR_PREFIX):]) if body.services else None)
+    elif section == 'longCarry':
+        if body.services is None or any(not row.comments.startswith(LONG_CARRY_PREFIX) for row in body.services):
+            raise HTTPException(422, 'Service belongs to a different pricing section.')
+        save_long_carry_card(plan, LongCarryCard.model_validate_json(body.services[0].comments[len(LONG_CARRY_PREFIX):]) if body.services else None)
+    elif section == 'stairs':
+        if body.services is None or any(not row.comments.startswith(STAIRS_PREFIX) for row in body.services):
+            raise HTTPException(422, 'Service belongs to a different pricing section.')
+        save_stairs_card(plan, StairsCard.model_validate_json(body.services[0].comments[len(STAIRS_PREFIX):]) if body.services else None)
     elif section == 'pickup':
         areas = body.pickup_areas
         if areas is None or len({area.state for area in areas}) != len(areas):

@@ -47,9 +47,13 @@ def test_real_pricing_save_keeps_service_and_client_data():
     from pickup_areas import set_pickup_areas
     from extra_stops import EXTRA_STOPS_PREFIX, ExtraStopsCard, save_stops_card
     from elevator_pricing import ELEVATOR_PREFIX, ElevatorCard, save_elevator_card
+    from long_carry_pricing import LONG_CARRY_PREFIX, LongCarryCard, save_long_carry_card
+    from stairs_pricing import STAIRS_PREFIX, StairsCard, save_stairs_card
     scope.update(PlanUpdate=Row,Session=Session,Depends=Depends,require_admin=lambda:None,get_db=lambda:None,HTTPException=HTTPException,json=json,
                  set_pickup_areas=set_pickup_areas,EXTRA_STOPS_PREFIX=EXTRA_STOPS_PREFIX,ExtraStopsCard=ExtraStopsCard,save_stops_card=save_stops_card,
-                 ELEVATOR_PREFIX=ELEVATOR_PREFIX,ElevatorCard=ElevatorCard,save_elevator_card=save_elevator_card)
+                 ELEVATOR_PREFIX=ELEVATOR_PREFIX,ElevatorCard=ElevatorCard,save_elevator_card=save_elevator_card,
+                 LONG_CARRY_PREFIX=LONG_CARRY_PREFIX,LongCarryCard=LongCarryCard,save_long_carry_card=save_long_carry_card,
+                 STAIRS_PREFIX=STAIRS_PREFIX,StairsCard=StairsCard,save_stairs_card=save_stairs_card)
     exec(compile(ast.Module(body=[node],type_ignores=[]),str(path),'exec'),scope)
     engine=create_engine('sqlite://')
     models.Base.metadata.create_all(engine)

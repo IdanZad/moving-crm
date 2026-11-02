@@ -85,6 +85,10 @@ def migrate() -> None:
         logger.info("Moved additional stop pricing for %s pricing plans", migrate_stops_cards(connection))
         from elevator_pricing import migrate_elevator_cards
         logger.info("Moved elevator pricing for %s pricing plans", migrate_elevator_cards(connection))
+        from long_carry_pricing import migrate_long_carry_cards
+        logger.info("Moved long carry pricing for %s pricing plans", migrate_long_carry_cards(connection))
+        from stairs_pricing import migrate_stairs_cards
+        logger.info("Moved stairs pricing for %s pricing plans", migrate_stairs_cards(connection))
         # Jobs priced while the old "All Jobs" rule line was charged next to the new fee: zero that
         # line, as a recalculation would, and take it out of the job, published and lead totals.
         if connection.execute(text("""

@@ -929,6 +929,8 @@ class PricingPlan(Base):
     )
     extra_stops = relationship("PricingExtraStops", uselist=False, cascade="all, delete-orphan", lazy="selectin")
     elevator = relationship("PricingElevator", uselist=False, cascade="all, delete-orphan", lazy="selectin")
+    long_carry = relationship("PricingLongCarry", uselist=False, cascade="all, delete-orphan", lazy="selectin")
+    stairs = relationship("PricingStairs", uselist=False, cascade="all, delete-orphan", lazy="selectin")
 
     def summary_dict(self):
         from pickup_areas import pickup_areas, pickup_summary
@@ -963,7 +965,10 @@ class PricingPlan(Base):
         # Pricing cards kept in their own tables are presented as service rows, as the API always has.
         from extra_stops import stops_service_row
         from elevator_pricing import elevator_service_row
-        return [row for row in [stops_service_row(self), elevator_service_row(self)] if row]
+        from long_carry_pricing import long_carry_service_row
+        from stairs_pricing import stairs_service_row
+        return [row for row in [stops_service_row(self), elevator_service_row(self), long_carry_service_row(self),
+                                stairs_service_row(self)] if row]
 
 
 class PricingExtraStops(Base):
@@ -1003,6 +1008,36 @@ class PricingElevatorTier(Base):
     plan_id = Column(String(36), ForeignKey("pricing_elevator.plan_id", ondelete="CASCADE"), nullable=False)
     up_to_cuft = Column(Integer)
     fee = Column(Numeric(10, 2), nullable=False)
+
+
+class PricingLongCarry(Base):
+    """Long carry pricing: one row per plan."""
+    __tablename__ = "pricing_long_carry"
+
+    plan_id = Column(String(36), ForeignKey("pricing_plans.id", ondelete="CASCADE"), primary_key=True)
+    enabled = Column(Boolean, nullable=False, default=False)
+    included_feet = Column(Integer, nullable=False)
+    increment_feet = Column(Integer, nullable=False)
+    rate_per_cuft = Column(Numeric(10, 2), nullable=False)
+    # Blank uses the move's minimum billable volume.
+    minimum_cubic_feet = Column(Integer)
+    pickup_discount_percent = Column(Numeric(5, 2), nullable=False, default=0)
+    delivery_discount_percent = Column(Numeric(5, 2), nullable=False, default=0)
+
+
+class PricingStairs(Base):
+    """Outdoor and building stairs pricing: one row per plan."""
+    __tablename__ = "pricing_stairs"
+
+    plan_id = Column(String(36), ForeignKey("pricing_plans.id", ondelete="CASCADE"), primary_key=True)
+    enabled = Column(Boolean, nullable=False, default=False)
+    steps_per_flight = Column(Integer, nullable=False)
+    free_flights = Column(Integer, nullable=False)
+    rate_per_cuft = Column(Numeric(10, 2), nullable=False)
+    # Blank uses the move's minimum billable volume.
+    minimum_cubic_feet = Column(Integer)
+    pickup_discount_percent = Column(Numeric(5, 2), nullable=False, default=0)
+    delivery_discount_percent = Column(Numeric(5, 2), nullable=False, default=0)
 
 
 class PricingPickupArea(Base):
