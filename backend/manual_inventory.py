@@ -27,6 +27,7 @@ class CustomInventoryItemInput(BaseModel):
     cuft: Decimal = Field(gt=0, le=10000, allow_inf_nan=False)
     quantity: int = Field(ge=1, le=999, strict=True)
     mover_pack: bool | None = None
+    mover_pack_count: int | None = Field(default=None, ge=0, le=999, strict=True)
     selections: ServiceSelections = Field(default_factory=dict)
     going: bool = True
     reference_name: str | None = Field(default=None, max_length=200)
@@ -128,20 +129,6 @@ def update_inventory_row(body, access, db):
             target.name, target.amount, target.cuft = updated['name'], changes.quantity, Decimal(str(updated['cuft']))
         elif target is not None:
             db.delete(target)
-        if any(re.search(r'\bbox(?:es)?\b|\bdish\s*pack\b', row['name'], re.I) for row in (old, updated)):
-            selection = json.loads(job.customer_packing_package or '{}')
-            if selection.get('mode') != 'full':
-                def box_key(row):
-                    normalize = lambda value: re.sub(r'\s+', ' ', value.strip().lower())
-                    return f"{normalize(row.get('room') or 'Other items')}:{normalize(base_name(row['name']))}"
-                quantities = dict(selection.get('box_quantities', {}))
-                for key in {box_key(old), box_key(updated)}:
-                    box_id = str(uuid5(NAMESPACE_URL, f'inventory-box:{job.id}:{key}'))
-                    quantities[box_id] = sum(int(row['amount']) for row in rows
-                        if row.get('going') is not False and box_key(row) == key
-                        and (row.get('mover_pack') is True or re.search(r'\(CP\)\s*$', row['name'], re.I)))
-                selection['box_quantities'] = quantities
-                job.customer_packing_package = json.dumps(selection)
         replace_in_rooms(details.get('manual_rooms', []))
         details['question_original_rows'] = [dict(row) for row in rows]
         details.pop('report_question_answers', None)
@@ -252,7 +239,7 @@ def build_inventory(body, db, allow_empty=False):
             row = {'item_id': catalog_item.id if catalog_item else 'custom-' + str(entry.id), 'room': room.name.strip(), 'name': display_name,
                    'catalog_item_id': catalog_item.id if catalog_item else None, 'name_override': entry.name_override,
                    'amount': entry.quantity, 'cuft': float(volume), 'weight': 0,
-                   'unit_cuft': float(entry.cuft), 'unit_weight': 0, 'custom': True, 'going': entry.going, 'mover_pack': entry.mover_pack,
+                   'unit_cuft': float(entry.cuft), 'unit_weight': 0, 'custom': True, 'going': entry.going, 'mover_pack': entry.mover_pack, 'mover_pack_count': entry.mover_pack_count,
                    'reference_name': entry.reference_name or entry.name.strip(), 'selections': entry.selections,
                    'set_id': str(entry.set_id) if entry.set_id else None, 'set_name': entry.set_name}
             rows.append(row)
@@ -365,30 +352,6 @@ def replace_current_inventory(body, access, db):
     # Inventory edits must retain the customer's packing choices, not stale name suffixes.
     job = db.get(LeadJob, access.job_id)
     lead = db.get(Lead, access.lead_id)
-    package = None
-    if any(re.search(r'\bbox(?:es)?\b|\bdish\s*pack\b', row['name'], re.I) for row in rows):
-        from routes.pricing import customer_packing_package, apply_box_packing_to_inventory
-        package = customer_packing_package(lead, job, db)
-    if package:
-        selection = package['selection']
-        def box_key(room, name):
-            return (room.strip().casefold(), re.sub(r'\s*\((?:CP|PBO)\)\s*$', '', name, flags=re.I).strip().casefold())
-        touched = {box_key(row['room'], row['name']) for row in rows if row.get('mover_pack') is not None}
-        if touched and selection.get('mode') != 'full':
-            quantities = dict(selection.get('box_quantities', {}))
-            for box in package.get('box_items', []):
-                key = box_key(box.get('room') or 'Other items', box['label'])
-                if key in touched:
-                    quantities[box['id']] = sum(int(row['amount']) for row in rows
-                        if row.get('going') is not False and box_key(row['room'], row['name']) == key
-                        and (row.get('mover_pack') is True or (row.get('mover_pack') is None and re.search(r'\(CP\)\s*$', row['name'], re.I))))
-            stored_selection = json.loads(job.customer_packing_package or '{}')
-            stored_selection['box_quantities'] = quantities
-            job.customer_packing_package = json.dumps(stored_selection)
-            selection = {**selection, 'box_quantities': quantities}
-        if selection.get('mode') == 'full':
-            selection = {**selection, 'box_quantities': {item['id']: item['quantity'] for item in package.get('box_items', [])}}
-        apply_box_packing_to_inventory(job, db, package, selection)
     # Save the compact inventory rows directly. Report processing includes
     # progress publications and extraction work that autosaves do not need.
     details = json.loads(saved.details or '{}')

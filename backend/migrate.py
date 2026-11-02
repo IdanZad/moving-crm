@@ -140,6 +140,7 @@ def migrate() -> None:
             logger.info("Renamed %s administration fee charges", renamed)
         connection.execute(text('ALTER TABLE inventory_edit_items ADD COLUMN IF NOT EXISTS set_id VARCHAR(36)'))
         connection.execute(text('ALTER TABLE inventory_edit_items ADD COLUMN IF NOT EXISTS set_name VARCHAR(200)'))
+        connection.execute(text('ALTER TABLE inventory_edit_items ADD COLUMN IF NOT EXISTS mover_pack_count INTEGER'))
         from followup_tasks import install as install_followup_tasks
         install_followup_tasks(connection)
         from smartmoving_task_migration import install as install_smartmoving_tasks

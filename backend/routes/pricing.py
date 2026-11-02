@@ -582,9 +582,11 @@ def _job_spark_inventory_items(job_id: str, db: Session) -> list[dict]:
                 cuft = float(row['cuft']) if row.get('cuft') is not None else None
             except (TypeError, ValueError):
                 cuft = None
+            from box_packing import movers_pack_count
             result.append({'item_id': row.get('item_id'), 'catalog_item_id': row.get('catalog_item_id'),
                            'name_override': row.get('name_override', False), 'unit_cuft': row.get('unit_cuft'), 'name': str(row['name']),
-                           'quantity': quantity, 'room': str(row.get('room') or ''), 'cuft': cuft})
+                           'quantity': quantity, 'room': str(row.get('room') or ''), 'cuft': cuft,
+                           'mover_pack_count': movers_pack_count(row)})
         return result
     items = db.query(LeadSparkInventoryItem).filter(LeadSparkInventoryItem.job_id == job_id).all()
     res = []
@@ -1143,8 +1145,10 @@ def customer_packing_package(lead, job, db, plan=None, move_type=None, selection
             quantity = max(1, int(float(row.get('amount') or row.get('quantity') or 1)))
         except (TypeError, ValueError):
             quantity = 1
-        group = inventory_boxes.setdefault(group_key, {'label': name, 'room': room, 'quantity': 0})
+        group = inventory_boxes.setdefault(group_key, {'label': name, 'room': room, 'quantity': 0, 'movers': 0})
         group['quantity'] += quantity
+        from box_packing import movers_pack_count
+        group['movers'] += movers_pack_count(row)
     box_items = []
     for group_key, group in inventory_boxes.items():
         words = box_words(group['label'])
@@ -1159,19 +1163,11 @@ def customer_packing_package(lead, job, db, plan=None, move_type=None, selection
                           'label': group['label'], 'room': group['room'], 'quantity': group['quantity'],
                           'material_name': rate.name, 'available': True,
                           'labor_price': float(rate.packing_price),
-                          'material_price': float(rate.material_price)})
+                          'material_price': float(rate.material_price), 'movers': group['movers']})
     selection = selection_override if selection_override is not None else json.loads(job.customer_packing_package or '{}')
     if selection_override is None:
-        box_limits = {item['id']: item['quantity'] for item in box_items}
-        saved_box_quantities = {}
-        for item_id, quantity in selection.get('box_quantities', {}).items():
-            try:
-                quantity = int(quantity)
-            except (TypeError, ValueError):
-                continue
-            if item_id in box_limits and quantity > 0:
-                saved_box_quantities[item_id] = min(quantity, box_limits[item_id])
-        selection = {**selection, 'box_quantities': saved_box_quantities}
+        # The inventory rows say how many boxes the movers pack.
+        selection = {**selection, 'box_quantities': {item['id']: item['movers'] for item in box_items if item['movers'] > 0}}
     # Legacy card.items stays stored, but no longer supplies wizard requirements.
     other_inventory = inventory_material_options([row for row in inventory if isinstance(row, dict) and ' '.join(sorted(re.findall(r'\w+', str(row.get('name') or '').casefold()))) not in configured_names])
     return {'cubic_feet': volume, 'inventory_cubic_feet': inventory_volume, 'minimum_cubic_feet': minimum_volume, 'rates': rates, 'items': configured_items,
@@ -1184,7 +1180,7 @@ def customer_packing_package(lead, job, db, plan=None, move_type=None, selection
 
 
 def apply_box_packing_to_inventory(job, db, package, selection):
-    """Persist CP/PBO as inventory metadata while keeping one box inventory."""
+    """Record on each box row how many of its boxes the movers pack."""
     from models import LeadLiveSwitch, LeadSparkInventoryItem
     saved = db.query(LeadLiveSwitch).filter_by(lead_id=job.lead_id).with_for_update().first()
     if not saved:
@@ -1207,19 +1203,12 @@ def apply_box_packing_to_inventory(job, db, package, selection):
         total_qty = sum(max(1, int(float(row.get('amount') or row.get('quantity') or 1))) for row in source)
         cp_qty = max(0, min(total_qty, int(quantities.get(box['id'], 0) or 0)))
         totals = {field: sum(float(row.get(field) or 0) for row in source) for field in ('cuft', 'weight')}
-        template = dict(source[0])
-        base_name = _box_base_name(template.get('name') or box['label'])
-        replacements = []
-        for suffix, quantity in (('PBO', total_qty - cp_qty), ('CP', cp_qty)):
-            if quantity <= 0:
-                continue
-            row = dict(template)
-            row['name'] = f'{base_name} ({suffix})'
-            row['amount'] = quantity
-            row['quantity'] = quantity
-            row['cuft'] = round(totals['cuft'] * quantity / total_qty, 4)
-            row['weight'] = round(totals['weight'] * quantity / total_qty, 4)
-            replacements.append(row)
+        # One row per box type and room; it records how many of its boxes the movers pack.
+        row = dict(source[0])
+        row.update(name=_box_base_name(row.get('name') or box['label']), amount=total_qty, quantity=total_qty,
+                   cuft=round(totals['cuft'], 4), weight=round(totals['weight'], 4),
+                   mover_pack=None, mover_pack_count=cp_qty)
+        replacements = [row]
         first = indexes[0]
         rows = [row for index, row in enumerate(rows) if index not in set(indexes)]
         rows[first:first] = replacements

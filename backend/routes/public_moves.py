@@ -1134,6 +1134,11 @@ def patch_customer_inventory_actions(body: InventoryEdits | InventoryActionsInpu
     return save_inventory_actions(body, access, db)
 
 
+def stored_selection(selection):
+    """The packing choice as saved: box counts live only on the inventory rows."""
+    return {key: value for key, value in selection.items() if key != 'box_quantities'}
+
+
 class BrowserFeeDistance(BaseModel):
     kind: Literal['origin', 'delivery']
     revision: str = Field(min_length=64, max_length=64)
@@ -1637,6 +1642,10 @@ def save_customer_packing(body: CustomerPackingPatch, access: PublicMoveAccess =
             selection['stairs'] = previous_package['stairs']
         package_old_ids = ['package:full', 'package:partial', 'package:unpacking'] + [f'box:{item_id}' for item_id in previous_package.get('item_ids', [])]
         package_old_ids += [f'inventory-box:{item_id}' for item_id in previous_package.get('box_quantities', {})]
+        package_old_ids += [f"inventory-box:{item['id']}" for item in package.get('box_items', [])]
+        if not (change and change.kind in ('inventory_boxes', 'mode')):
+            # Only the Boxes step changes box counts; everything else uses what the inventory records.
+            selection['box_quantities'] = {item['id']: item['movers'] for item in package.get('box_items', []) if item['movers'] > 0}
         package_old_ids += [f'material:{item_id}' for item_id in previous_package.get('additional_items', {})]
         try:
             package_lines = customer_package_lines(package, selection)
@@ -1658,7 +1667,7 @@ def save_customer_packing(body: CustomerPackingPatch, access: PublicMoveAccess =
         # Repricing applies these selections when a complete price is available.
         job.customer_packing = json.dumps(choices, sort_keys=True)
         if body.package is not None:
-            job.customer_packing_package = json.dumps(selection)
+            job.customer_packing_package = json.dumps(stored_selection(selection))
         db.commit()
         return saved_response()
     previous = set(json.loads(job.customer_packing or '[]'))
@@ -1686,7 +1695,7 @@ def save_customer_packing(body: CustomerPackingPatch, access: PublicMoveAccess =
                                 name=line['name'], description=line['description'], sort_order=2000 + index,
                                 subtotal=line['amount'], discount_amount=0, total_cost=line['amount']))
             new_total += line['amount']
-        job.customer_packing_package = json.dumps(selection)
+        job.customer_packing_package = json.dumps(stored_selection(selection))
     job.customer_packing = json.dumps(choices, sort_keys=True)
     updates.finish()
     delta = new_total - old_total

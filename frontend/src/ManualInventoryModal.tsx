@@ -11,7 +11,7 @@ import './ManualInventoryModal.css';
 import type { CatalogSet } from './CatalogSets';
 type CatalogItem = { id: string; name: string; description: string; cuft: number; weight: number; selectors?: ItemSelector[] };
 type RoomType = { id: string; name: string };
-type CustomItem = { id: string; catalog_item_id?: string; name_override?: boolean; name: string; cuft: number; quantity: number; reference_name?: string; going?: boolean; mover_pack?: boolean | null; unit_weight?: number; selectors?: ItemSelector[]; selections?: Record<string,ServiceSelection>; set_id?: string | null; set_name?: string | null };
+type CustomItem = { id: string; catalog_item_id?: string; name_override?: boolean; name: string; cuft: number; quantity: number; reference_name?: string; going?: boolean; mover_pack_count?: number | null; mover_pack?: boolean | null; unit_weight?: number; selectors?: ItemSelector[]; selections?: Record<string,ServiceSelection>; set_id?: string | null; set_name?: string | null };
 type Room = { id: string; room_type_id: string; name: string; items: Record<string, number>; item_names?: Record<string,string>; custom_items?: CustomItem[] };
 type Catalog = { rooms: RoomType[]; items: CatalogItem[]; sets?: CatalogSet[] };
 function itemGroups(items: CustomItem[]) {
@@ -24,24 +24,38 @@ function itemGroups(items: CustomItem[]) {
   return [...groups.entries()];
 }
 function packingItemName(name: string) {
-  if (/\((?:cp|pbo)\)\s*$/i.test(name)) return name;
-  return /\bbox(?:es)?\b|\bdish\s*pack\b/i.test(name) ? `${name} (PBO)` : name;
+  // Who packs a box is a count on its row, not part of its name.
+  return name.replace(/\s*\((?:cp|pbo)\)\s*$/i, '');
 }
-function PackingChoice({ name, disabled, onChange }: { name: string; disabled: boolean; onChange: (checked: boolean) => void }) {
+// Units the movers pack: the row's count, or the older whole-row CP marking.
+function moverPackCount(item: { name: string; quantity: number; mover_pack?: boolean | null; mover_pack_count?: number | null }) {
+  if (item.mover_pack_count != null) return Math.min(item.mover_pack_count, item.quantity);
+  if (item.mover_pack != null) return item.mover_pack ? item.quantity : 0;
+  return /\(CP\)\s*$/i.test(item.name) ? item.quantity : 0;
+}
+function PackingChoice({ name, quantity, count, disabled, onChange }: { name: string; quantity: number; count: number; disabled: boolean; onChange: (count: number) => void }) {
   const [open, setOpen] = useState(false);
   const trigger = useRef<HTMLButtonElement>(null);
-  const movers = /\(CP\)\s*$/i.test(name);
-  return <span className="mi-packing-choice" onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false); }} onKeyDown={event => {
+  const movers = Math.max(0, Math.min(quantity, count));
+  const summary = movers === quantity ? 'CP' : movers === 0 ? 'PBO' : `CP (${movers}), PBO (${quantity - movers})`;
+  const rows: [string, number, (value: number) => number][] = [
+    ['Movers pack', movers, value => value], ['You pack', quantity - movers, value => quantity - value]];
+  return <span className="mi-packing-choice mi-service-choice" onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false); }} onKeyDown={event => {
     if (event.key === 'Escape' && open) { event.preventDefault(); event.stopPropagation(); setOpen(false); trigger.current?.focus(); }
   }}>
-    <button ref={trigger} type="button" className="mi-packing-trigger" disabled={disabled} aria-expanded={open} aria-label={`Packing for ${name}: ${movers ? 'Movers pack' : 'You pack'}`} onClick={() => setOpen(value => !value)}>
-      {movers ? 'CP' : 'PBO'}<svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m3 4.5 3 3 3-3"/></svg>
+    <button ref={trigger} type="button" className="mi-packing-trigger" disabled={disabled} aria-expanded={open} aria-label={`Packing for ${name}: ${summary}`} onClick={() => setOpen(value => !value)}>
+      <span className="mi-service-summary"><span>{summary}</span></span><svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m3 4.5 3 3 3-3"/></svg>
     </button>
-    {open && <span className="mi-packing-menu" role="group" aria-label="Who packs this item?">
-      {[false, true].map(value => <button type="button" key={String(value)} aria-pressed={movers === value} onClick={() => { onChange(value); setOpen(false); trigger.current?.focus(); }}>
-        <span>{value ? 'CP' : 'PBO'}</span><span>{value ? 'Movers pack' : 'You pack'}</span>
-        {movers === value && <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m2 6 2.5 2.5L10 3"/></svg>}
-      </button>)}
+    {open && <span className="mi-packing-menu" role="group" aria-label="Who packs these boxes?">
+      <span className="mi-service-count-heading">{quantity} {quantity === 1 ? 'box' : 'boxes'} total</span>
+      {rows.map(([label, value, toMovers]) => <span className="mi-service-count-row" key={label}>
+        <span>{label}</span>
+        <span className="mi-service-counter">
+          <button type="button" aria-label={`Decrease ${label}`} disabled={disabled || value === 0} onClick={() => onChange(toMovers(value - 1))}><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="M2.5 6h7"/></svg></button>
+          <input type="number" min="0" max={quantity} step="1" aria-label={`Boxes for ${label}`} disabled={disabled} value={value} onChange={event => { const next = event.target.valueAsNumber; if (Number.isFinite(next)) onChange(toMovers(Math.max(0, Math.min(quantity, Math.floor(next))))); }} />
+          <button type="button" aria-label={`Increase ${label}`} disabled={disabled || value === quantity} onClick={() => onChange(toMovers(value + 1))}><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="M6 2.5v7M2.5 6h7"/></svg></button>
+        </span>
+      </span>)}
     </span>}
   </span>;
 }
@@ -78,9 +92,9 @@ function ServiceChoice({selector, value, quantity, name, disabled, open, setOpen
     </span>}
   </span>;
 }
-function InventoryRow({ name, cuft, quantity, busy, photo, going = true, onGoingChange, onMoverPackChange, packingLocked = false, serviceBusy, serviceRowId, openService, setOpenService, selectors = [], selections = {}, onSelectionChange, onSave, onRemove }: {
+function InventoryRow({ name, cuft, quantity, busy, photo, going = true, onGoingChange, onMoverPackChange, moverPackCount = 0, packingLocked = false, serviceBusy, serviceRowId, openService, setOpenService, selectors = [], selections = {}, onSelectionChange, onSave, onRemove }: {
   name: string; cuft: number; quantity: number; busy: boolean; photo?: ReactNode; going?: boolean; onGoingChange: (going: boolean) => void;
-  onMoverPackChange?: (checked: boolean) => void; packingLocked?: boolean;
+  onMoverPackChange?: (count: number) => void; moverPackCount?: number; packingLocked?: boolean;
   serviceBusy:boolean; serviceRowId:string; openService:string; setOpenService:(id:string)=>void;
   selectors?: ItemSelector[]; selections?: Record<string,ServiceSelection>; onSelectionChange?: (id: string, value: ServiceSelection) => void;
   onSave: (value: { name: string; cuft: number; quantity: number }) => void; onRemove: () => void;
@@ -103,7 +117,7 @@ function InventoryRow({ name, cuft, quantity, busy, photo, going = true, onGoing
       <span aria-label="Total volume in cubic feet"><span className="mi-mobile-label">Total volume</span>{totalVolumeLabel}<span className="mi-mobile-unit"> cu ft</span></span>
       <label><span className="mi-mobile-label">Quantity</span><input aria-label="Quantity" type="number" min="1" max="999" step="1" value={draft.quantity} disabled={busy} onChange={e => setDraft({ ...draft, quantity: e.target.value })} /></label>
     </> : <>
-      <div className={`mi-inventory-name${selectors.length ? ' mi-name-with-services' : ''}`}><span className="mi-item-name-label"><strong>{onMoverPackChange ? name.replace(/\s*\((?:CP|PBO)\)\s*$/i, '') : name}</strong>{onMoverPackChange && <PackingChoice name={name} disabled={busy || packingLocked || !going} onChange={onMoverPackChange}/>}</span>
+      <div className={`mi-inventory-name${selectors.length ? ' mi-name-with-services' : ''}`}><span className="mi-item-name-label"><strong>{onMoverPackChange ? name.replace(/\s*\((?:CP|PBO)\)\s*$/i, '') : name}</strong>{onMoverPackChange && <PackingChoice name={name.replace(/\s*\((?:CP|PBO)\)\s*$/i, '')} quantity={quantity} count={moverPackCount} disabled={busy || packingLocked || !going} onChange={onMoverPackChange}/>}</span>
         {!!selectors.length && <span className="mi-item-services">{selectors.map(selector => <ServiceChoice key={selector.id} selector={selector} name={name} value={selections[selector.id]} quantity={quantity} disabled={serviceBusy || !going} open={openService === `${serviceRowId}:${selector.id}`} setOpen={open => setOpenService(open ? `${serviceRowId}:${selector.id}` : '')} onChange={value => onSelectionChange?.(selector.id, value)}/>)}</span>}
         {Object.entries(selections).filter(([id]) => !selectors.some(selector => selector.id === id)).map(([id, value]) => <span key={id} className="mi-item-services">{typeof value === 'string' ? value : Object.entries(value).filter(([, count]) => count > 0).map(([option, count]) => `${option} (${count})`).join(', ')}</span>)}
       </div>
@@ -155,7 +169,7 @@ export default function ManualInventoryModal({ loadCatalog, submitActions, downl
   submitActions: (requestId: string, edits: InventoryEdits, revision: string, reportId: string | null) => Promise<{revision:string}>;
   loadInventory: () => Promise<{revision:string; report_id:string|null; rooms:Room[]}>;
   draftKey: string;
-  packing?: { full: boolean; boxes: { label: string; room?: string; quantity: number }[] };
+  packing?: { full: boolean };
   imageEndpoint?: string;
   linkKey?: string;
   session?: string;
@@ -342,23 +356,6 @@ export default function ManualInventoryModal({ loadCatalog, submitActions, downl
         }
       } catch { /* The server inventory remains authoritative. */ }
       const loaded: Room[] = structuredClone(saved || serverRooms);
-      if (packing) {
-        const baseName = (name: string) => name.replace(/\s*\((?:CP|PBO)\)\s*$/i, '').trim();
-        const key = (room: string, name: string) => `${room.trim().toLowerCase()}:${baseName(name).toLowerCase()}`;
-        const remaining = new Map(packing.boxes.map(box => [key(box.room || 'Other items', box.label), box.quantity]));
-        for (const room of loaded) {
-          room.custom_items = (room.custom_items || []).flatMap(item => {
-            if (item.going === false || !/\bbox(?:es)?\b|\bdish\s*pack\b/i.test(item.name)) return [item];
-            const id = key(room.name, item.name);
-            const cp = packing.full ? item.quantity : Math.min(item.quantity, remaining.get(id) || 0);
-            remaining.set(id, Math.max(0, (remaining.get(id) || 0) - cp));
-            return [
-              ...(cp ? [{ ...item, name: `${baseName(item.name)} (CP)`, mover_pack: true, quantity: cp }] : []),
-              ...(cp < item.quantity ? [{ ...item, id: cp ? crypto.randomUUID() : item.id, name: `${baseName(item.name)} (PBO)`, mover_pack: false, quantity: item.quantity - cp }] : []),
-            ];
-          });
-        }
-      }
       loadedRooms.current = loaded;
       savedRooms.current = serverRooms;
       setRooms(loaded);
@@ -587,7 +584,7 @@ export default function ManualInventoryModal({ loadCatalog, submitActions, downl
               } : valueRoom))}
               onGoingChange={going => setRooms(current => current.map(value => value.id === r.id ? { ...value, items: { ...value.items, [id]: 0 }, custom_items: [...(value.custom_items || []), { id: catalogInventoryId(r, id), catalog_item_id: id, name: r.item_names?.[id] || items.get(id)?.name || 'Item', cuft: items.get(id)?.cuft || 0.01, quantity: qty, going, reference_name: items.get(id)?.name }] } : value))}
               packingLocked={packing?.full}
-              onMoverPackChange={/\bbox(?:es)?\b|\bdish\s*pack\b/i.test(items.get(id)?.name || '') ? checked => setRooms(current => current.map(value => value.id === r.id ? { ...value, items: { ...value.items, [id]: 0 }, custom_items: [...(value.custom_items || []), { id: catalogInventoryId(r, id), catalog_item_id: id, name: (r.item_names?.[id] || items.get(id)?.name || 'Box').replace(/\s*\((?:CP|PBO)\)\s*$/i, '') + (checked ? ' (CP)' : ' (PBO)'), cuft: items.get(id)?.cuft || 0.01, quantity: qty, mover_pack: checked, reference_name: items.get(id)?.name }] } : value)) : undefined}
+              onMoverPackChange={/\bbox(?:es)?\b|\bdish\s*pack\b/i.test(items.get(id)?.name || '') ? count => setRooms(current => current.map(value => value.id === r.id ? { ...value, items: { ...value.items, [id]: 0 }, custom_items: [...(value.custom_items || []), { id: catalogInventoryId(r, id), catalog_item_id: id, name: packingItemName(r.item_names?.[id] || items.get(id)?.name || 'Box'), cuft: items.get(id)?.cuft || 0.01, quantity: qty, mover_pack: null, mover_pack_count: count, reference_name: items.get(id)?.name }] } : value)) : undefined}
               selectors={items.get(id)?.selectors}
               onSelectionChange={(selectorId, choice) => setRooms(current => current.map(value => value.id === r.id ? {...value, items: {...value.items, [id]: 0}, custom_items: [...(value.custom_items || []), {id: catalogInventoryId(r, id), catalog_item_id: id, name: packingItemName(r.item_names?.[id] || items.get(id)?.name || 'Item'), name_override: !!r.item_names?.[id], cuft: items.get(id)?.cuft || 0.01, quantity: qty, selections: choice ? {[selectorId]: choice} : {}}]} : value))}
               onRemove={() => quantity(id, 0, r.id)} />)}
@@ -604,7 +601,8 @@ export default function ManualInventoryModal({ loadCatalog, submitActions, downl
               })} : value))}
               going={item.going} onGoingChange={going => setRooms(current => current.map(value => value.id === r.id ? { ...value, custom_items: value.custom_items?.map(entry => entry.id === item.id ? { ...entry, going } : entry) } : value))}
               packingLocked={packing?.full}
-              onMoverPackChange={/\bbox(?:es)?\b|\bdish\s*pack\b/i.test(item.name) ? checked => setRooms(current => current.map(value => value.id === r.id ? { ...value, custom_items: value.custom_items?.map(entry => entry.id === item.id ? { ...entry, reference_name: entry.reference_name || entry.name, mover_pack: checked, name: entry.name.replace(/\s*\((?:CP|PBO)\)\s*$/i, '') + (checked ? ' (CP)' : ' (PBO)') } : entry) } : value)) : undefined}
+              moverPackCount={moverPackCount(item)}
+              onMoverPackChange={/\bbox(?:es)?\b|\bdish\s*pack\b/i.test(item.name) ? count => setRooms(current => current.map(value => value.id === r.id ? { ...value, custom_items: value.custom_items?.map(entry => entry.id === item.id ? { ...entry, reference_name: entry.reference_name || entry.name, mover_pack: null, mover_pack_count: count, name: packingItemName(entry.name) } : entry) } : value)) : undefined}
               photo={imageEndpoint ? <QuestionReferenceImages active={visible} compact name={item.reference_name || item.name} room={r.name} endpoint={imageEndpoint} linkKey={linkKey} session={session}/> : undefined}
               onSave={changes => setRooms(current => current.map(value => value.id === r.id ? { ...value, custom_items: value.custom_items?.map(entry => entry.id === item.id ? { ...entry, name_override: entry.name_override || changes.name !== entry.name, reference_name: entry.reference_name || entry.name, ...changes } : entry) } : value))}
               onRemove={() => setRooms(current => current.map(value => value.id === r.id ? { ...value, custom_items: value.custom_items?.filter(entry => entry.id !== item.id) } : value))} />)}

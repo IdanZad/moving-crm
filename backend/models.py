@@ -1527,7 +1527,10 @@ class InventoryEditItem(Base):
     unit_cuft = Column(Numeric(18, 8), nullable=False)
     unit_weight = Column(Numeric(18, 8), nullable=False, default=0)
     going = Column(Boolean, nullable=False, default=True)
+    # Older rows marked a whole row CP (True) or PBO (False); mover_pack_count replaces that.
     mover_pack = Column(Boolean)
+    # How many of this row's units the movers pack.
+    mover_pack_count = Column(Integer)
     selections = Column(Text, nullable=False, default='{}')
     sort_order = Column(Integer, nullable=False, default=0)
     inventory_record_id = Column(String(36))

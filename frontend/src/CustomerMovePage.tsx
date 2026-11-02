@@ -248,6 +248,8 @@ export default function CustomerMovePage() {
   const pricingFullRefresh = useRef(false);
   function savePricingChange(change: PricingChange) {
     if (['extra_stops', 'inventory_boxes', 'mode'].includes(change.kind)) pricingFullRefresh.current = true;
+    // Box counts are saved on the inventory rows; reload the inventory window the next time it opens.
+    if (['inventory_boxes', 'mode'].includes(change.kind)) setInventoryOpened(false);
     const id = `pricing:${change.kind}:${change.location || change.item_id || ''}:${change.stop_change?.previous || change.stop_change?.address || ''}`;
     answerPending.current += 1;
     answerRevision.current += 1;
@@ -1039,7 +1041,7 @@ export default function CustomerMovePage() {
                 <p>Upload photos, videos, or documents, create an item list, or schedule a live virtual walkthrough with our team.</p>
                 <p>Your saved item list and uploaded media stay together. Generate one report to combine both into your inventory and estimate.</p>
                 <div className="cm-inventory-actions">
-                  <button type="button" className="slds-button cm-add-list-button" disabled={!sectionReady('inventory', 'pricing')} onClick={() => setShowInventoryList(true)}>{!sectionReady('inventory', 'pricing') ? 'Loading inventory...' : data.combined_inventory?.length||data.inventory_draft ? 'Update inventory' : 'Add a list'}</button>
+                  <button type="button" className="slds-button cm-add-list-button" disabled={!sectionReady('inventory')} onClick={() => setShowInventoryList(true)}>{!sectionReady('inventory') ? 'Loading inventory...' : data.combined_inventory?.length||data.inventory_draft ? 'Update inventory' : 'Add a list'}</button>
                   <button type="button" className="slds-button cm-add-list-button" disabled={busy || !photosRestored} onClick={() => filePicker.current?.click()} aria-busy={files.some(f => f.status === 'Uploading')}>{files.some(f => f.status === 'Uploading') ? 'Uploading...' : 'Upload files'}</button>
                   <button type="button" className="slds-button cm-add-list-button" disabled={!sectionReady('media')} onClick={() => meetingDialog.current?.showModal()}>Virtual estimate</button>
                   <input ref={filePicker} type="file" multiple hidden disabled={busy || !photosRestored} onChange={e=>{void choose(e.target.files);e.target.value='';}}/>
@@ -1060,7 +1062,7 @@ export default function CustomerMovePage() {
                   ))}
                 </div>
                 {sectionNotice('inventory', 'inventory')}
-                {sectionReady('inventory', 'pricing') && data.inventory_draft?.rows.length ? <section className="cm-saved-list-summary cm-saved-list-clickable" role="button" tabIndex={0} aria-label="Open saved item list" onClick={() => setShowInventoryList(true)} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setShowInventoryList(true); } }}>
+                {sectionReady('inventory') && data.inventory_draft?.rows.length ? <section className="cm-saved-list-summary cm-saved-list-clickable" role="button" tabIndex={0} aria-label="Open saved item list" onClick={() => setShowInventoryList(true)} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setShowInventoryList(true); } }}>
                   <div>
                     <strong>Saved item list</strong>
                     <span>{data.inventory_draft.rooms.reduce((total, room) => total + room.items.reduce((roomTotal, item) => roomTotal + Number(item.amount || 0), 0), 0)} items &middot; {data.inventory_draft.rooms.reduce((total, room) => total + room.items.reduce((sum, item) => sum + Number(item.amount || 0) * piecesPerItem(item.name), 0), 0)} pieces &middot; {data.inventory_draft.rooms.reduce((total, room) => total + room.items.reduce((sum, item) => sum + boxQuantity(item.name, Number(item.amount || 0)), 0), 0)} boxes &middot; {data.inventory_draft.cuft.toLocaleString()} cu ft</span>
@@ -1226,7 +1228,7 @@ export default function CustomerMovePage() {
                 };
                 const sparkBusy = !!data.spark && data.spark.status !== 'completed' && data.spark.status !== 'failed';
                 return <ol className="cm-estimate-flow" aria-label="Complete your estimate">
-                <li><button type="button" className={`cm-flow-step${nextStep === 1 ? ' is-current' : ''}`} disabled={!sectionReady('inventory', 'pricing')} onClick={() => setShowInventoryList(true)}><span className="cm-flow-head"><span className="cm-flow-number">1</span><span className="cm-flow-label">Inventory{status(1, hasInventory)}</span>{sectionReady('inventory', 'pricing') && <CompletionIcon complete={hasInventory} label={hasInventory ? 'Inventory added' : 'Inventory missing'}/>}</span>{action(1, hasInventory ? 'Edit' : 'Add', 'Add', !sectionReady('inventory', 'pricing') ? 'Loading...' : '')}</button></li>
+                <li><button type="button" className={`cm-flow-step${nextStep === 1 ? ' is-current' : ''}`} disabled={!sectionReady('inventory')} onClick={() => setShowInventoryList(true)}><span className="cm-flow-head"><span className="cm-flow-number">1</span><span className="cm-flow-label">Inventory{status(1, hasInventory)}</span>{sectionReady('inventory') && <CompletionIcon complete={hasInventory} label={hasInventory ? 'Inventory added' : 'Inventory missing'}/>}</span>{action(1, hasInventory ? 'Edit' : 'Add', 'Add', !sectionReady('inventory') ? 'Loading...' : '')}</button></li>
                 <li>
                   <button
                     type="button"
@@ -1309,7 +1311,7 @@ export default function CustomerMovePage() {
               {!showQuestions && (packingError || termsError) && <p role="alert">{packingError || termsError} <button type="button" className="cm-secondary-btn" onClick={() => setShowQuestions(true)}>Review answers</button></p>}
             </div>
 
-            {(showInventoryList || inventoryOpened) && <ManualInventoryModal visible={showInventoryList} key={`${accessId}:${data.spark?.id || 'draft'}:${JSON.stringify(data.packing_package?.selection || {})}`} loadInventory={() => call('/inventory/editor')} packing={data.packing_package ? { full: data.packing_package.selection.mode === 'full', boxes: (data.packing_package.box_items || []).map(box => ({ label: box.label, room: box.room, quantity: data.packing_package!.selection.box_quantities?.[box.id] || 0 })) } : undefined} imageEndpoint={`${base}/question-images`} linkKey={key} session={session} draftKey={`cm_inventory_${accessId}_${data.spark?.id||'draft'}_${JSON.stringify(data.packing_package?.selection || {})}`} loadCatalog={() => call('/inventory-catalog')} downloadPdf={async body => {
+            {(showInventoryList || inventoryOpened) && <ManualInventoryModal visible={showInventoryList} key={`${accessId}:${data.spark?.id || 'draft'}`} loadInventory={() => call('/inventory/editor')} packing={data.packing_package ? { full: data.packing_package.selection.mode === 'full' } : undefined} imageEndpoint={`${base}/question-images`} linkKey={key} session={session} draftKey={`cm_inventory_${accessId}_${data.spark?.id||'draft'}`} loadCatalog={() => call('/inventory-catalog')} downloadPdf={async body => {
               const response = await fetch(base + '/inventory.pdf', {
                 method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
                 body: JSON.stringify(body), cache: 'no-store',
