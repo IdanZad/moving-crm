@@ -177,7 +177,11 @@ export default function ManualInventoryModal({ loadCatalog, submitActions, downl
         for (const [id, quantity] of Object.entries(items)) {
           const item = definitions.get(id);
           if (quantity <= 0 || !item?.selectors?.length) continue;
-          custom.push({id: catalogInventoryId(room, id), catalog_item_id: id,
+          const rowId = catalogInventoryId(room, id);
+          // Adding the same item again raises the quantity on its existing row.
+          const existing = custom.findIndex(entry => entry.id === rowId);
+          if (existing >= 0) custom[existing] = {...custom[existing], quantity: custom[existing].quantity + quantity};
+          else custom.push({id: rowId, catalog_item_id: id,
             name: room.item_names?.[id] || item.name, name_override: !!room.item_names?.[id],
             cuft: item.cuft, unit_weight: item.weight, quantity});
           delete items[id];
