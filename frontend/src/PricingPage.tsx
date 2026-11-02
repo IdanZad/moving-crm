@@ -402,6 +402,16 @@ export default function PricingPage() {
       return reference.destination.toLowerCase().includes(query) || reference.destination_group.toLowerCase().includes(query);
     });
   }, [active, plan, editing, hasPendingRateGroups, pendingRateGroups, search]);
+  // Each rate input is as wide as its column's longest value, within limits.
+  const rateInputWidths = useMemo(() => {
+    const fit = (values: string[], min: number, max: number) => ({ width: `${Math.min(max, Math.max(min, ...values.map(value => value.length))) + 2}ch` });
+    return {
+      destination: fit(rateRows.map(row => row.destination), 6, 28),
+      area: fit(rateRows.map(row => row.destinationGroup), 6, 22),
+      minimum: fit(rateRows.map(row => String(row.minimumText || (row.minimumPrice ?? ""))), 4, 10),
+      rate: fit(rateRows.flatMap(row => row.rates.map(rate => String(rate.rate_text || (rate.rate ?? "")))), 4, 8),
+    };
+  }, [rateRows]);
   const pendingRateGroupKeys = useMemo(
     () => new Set(pendingRateGroups.map((ids) => ids.join("|"))),
     [pendingRateGroups],
@@ -1000,12 +1010,12 @@ export default function PricingPage() {
                         const groupEditable = editingSection('rates') || isPendingGroup;
                         return (
                         <tr key={group.key} className={isPendingGroup ? "pricing-rate-row-pending" : undefined}>
-                          <th>{groupEditable ? <input value={group.destination} placeholder="Destination or ZIP prefix" onChange={(e) => patchRateGroup(group.rowIds, { destination: e.target.value })} /> : <>{group.destination || "—"}</>}</th>
-                          <td>{groupEditable ? <input className="destination-group-input" value={group.destinationGroup} placeholder="Area, e.g. East Coast" onChange={(e) => patchRateGroup(group.rowIds, { destination_group: e.target.value })} /> : group.destinationGroup || "—"}</td>
-                          <td>{groupEditable ? <input type="text" inputMode="decimal" value={group.minimumText || (group.minimumPrice ?? "")} onChange={(e) => patchRateGroup(group.rowIds, { minimum_price: e.target.value === "" || Number.isNaN(Number(e.target.value)) ? null : Number(e.target.value), minimum_text: e.target.value })} /> : money(group.minimumPrice)}</td>
+                          <th>{groupEditable ? <input style={rateInputWidths.destination} value={group.destination} placeholder="Destination or ZIP prefix" onChange={(e) => patchRateGroup(group.rowIds, { destination: e.target.value })} /> : <>{group.destination || "—"}</>}</th>
+                          <td>{groupEditable ? <input className="destination-group-input" style={rateInputWidths.area} value={group.destinationGroup} placeholder="Area, e.g. East Coast" onChange={(e) => patchRateGroup(group.rowIds, { destination_group: e.target.value })} /> : group.destinationGroup || "—"}</td>
+                          <td>{groupEditable ? <input type="text" inputMode="decimal" style={rateInputWidths.minimum} value={group.minimumText || (group.minimumPrice ?? "")} onChange={(e) => patchRateGroup(group.rowIds, { minimum_price: e.target.value === "" || Number.isNaN(Number(e.target.value)) ? null : Number(e.target.value), minimum_text: e.target.value })} /> : money(group.minimumPrice)}</td>
                           {bands.map((band) => {
                             const rate = group.rates.find((row) => row.band_label === band);
-                            return <td key={band}>{!rate ? "—" : groupEditable ? <input type="text" inputMode="decimal" value={rate.rate_text || (rate.rate ?? "")} onChange={(e) => patchRate(rate.id, { rate: e.target.value === "" || Number.isNaN(Number(e.target.value)) ? null : Number(e.target.value), rate_text: e.target.value })} /> : rate.rate == null ? rate.rate_text : money(rate.rate)}</td>;
+                            return <td key={band}>{!rate ? "—" : groupEditable ? <input type="text" inputMode="decimal" style={rateInputWidths.rate} value={rate.rate_text || (rate.rate ?? "")} onChange={(e) => patchRate(rate.id, { rate: e.target.value === "" || Number.isNaN(Number(e.target.value)) ? null : Number(e.target.value), rate_text: e.target.value })} /> : rate.rate == null ? rate.rate_text : money(rate.rate)}</td>;
                           })}
                           {editingSection('rates') || isPendingGroup ? <td className="pricing-rate-actions"><button type="button" className="slds-button text-danger" onClick={() => removeRateGroup(group.rowIds)}>{isPendingGroup ? "Remove new row" : "Remove"}</button></td> : null}
                         </tr>
