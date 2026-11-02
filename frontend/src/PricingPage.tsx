@@ -199,6 +199,7 @@ export default function PricingPage() {
   const [deliveryAddress, setDeliveryAddress] = useState('');
   const [openSections, setOpenSections] = useState({ materials: false, extraStops: false, elevator: false, longCarry: false, stairs: false, storage: false, originFees: false, deliveryFees: false, shuttle: false, pickup: false, rates: false, packing: false, bulkyItems: false, services: false });
   const [pendingRateGroups, setPendingRateGroups] = useState<string[][]>([]);
+  const [addedRateId, setAddedRateId] = useState('');
 
   useEffect(() => {
     if (leadId && jobId) {
@@ -404,14 +405,24 @@ export default function PricingPage() {
   }, [active, plan, editing, hasPendingRateGroups, pendingRateGroups, search]);
   // Each rate input is as wide as its column's longest value, within limits.
   const rateInputWidths = useMemo(() => {
-    const fit = (values: string[], min: number, max: number) => ({ width: `${Math.min(max, Math.max(min, ...values.map(value => value.length))) + 2}ch` });
+    // Minimum widths; inputs grow to fill their column. The pixels cover padding and border.
+    const fit = (values: string[], min: number, max: number) => ({ minWidth: `calc(${Math.min(max, Math.max(min, ...values.map(value => value.length))) + 2}ch + 20px)` });
     return {
-      destination: fit(rateRows.map(row => row.destination), 6, 28),
-      area: fit(rateRows.map(row => row.destinationGroup), 6, 22),
-      minimum: fit(rateRows.map(row => String(row.minimumText || (row.minimumPrice ?? ""))), 4, 10),
-      rate: fit(rateRows.flatMap(row => row.rates.map(rate => String(rate.rate_text || (rate.rate ?? "")))), 4, 8),
+      destination: fit(rateRows.map(row => row.destination), 10, 28),
+      area: fit(rateRows.map(row => row.destinationGroup), 10, 22),
+      minimum: fit(rateRows.map(row => String(row.minimumText || (row.minimumPrice ?? ""))), 6, 10),
+      rate: fit(rateRows.flatMap(row => row.rates.map(rate => String(rate.rate_text || (rate.rate ?? "")))), 5, 8),
     };
   }, [rateRows]);
+  // Bring a newly added destination into view, ready to type.
+  useEffect(() => {
+    if (!addedRateId) return;
+    const row = document.querySelector<HTMLElement>(`[data-rate-id="${addedRateId}"]`);
+    if (!row) return;
+    row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    row.querySelector('input')?.focus({ preventScroll: true });
+    setAddedRateId('');
+  }, [addedRateId, rateRows]);
   const pendingRateGroupKeys = useMemo(
     () => new Set(pendingRateGroups.map((ids) => ids.join("|"))),
     [pendingRateGroups],
@@ -592,6 +603,8 @@ export default function PricingPage() {
     }));
     setDraft((current) => current ? { ...current, rates: [...(current.rates || []), ...rows] } : current);
     setPendingRateGroups((groups) => [...groups, rows.map((row) => row.id)]);
+    setSearch('');
+    setAddedRateId(rows[0].id);
   }
   function removeRateGroup(rowIds: string[]) {
     if (!rowIds.length) return;
@@ -1009,7 +1022,7 @@ export default function PricingPage() {
                         const isPendingGroup = pendingRateGroupKeys.has(group.rowIds.join("|"));
                         const groupEditable = editingSection('rates') || isPendingGroup;
                         return (
-                        <tr key={group.key} className={isPendingGroup ? "pricing-rate-row-pending" : undefined}>
+                        <tr key={group.key} data-rate-id={group.rowIds[0]} className={isPendingGroup ? "pricing-rate-row-pending" : undefined}>
                           <th>{groupEditable ? <input style={rateInputWidths.destination} value={group.destination} placeholder="Destination or ZIP prefix" onChange={(e) => patchRateGroup(group.rowIds, { destination: e.target.value })} /> : <>{group.destination || "—"}</>}</th>
                           <td>{groupEditable ? <input className="destination-group-input" style={rateInputWidths.area} value={group.destinationGroup} placeholder="Area, e.g. East Coast" onChange={(e) => patchRateGroup(group.rowIds, { destination_group: e.target.value })} /> : group.destinationGroup || "—"}</td>
                           <td>{groupEditable ? <input type="text" inputMode="decimal" style={rateInputWidths.minimum} value={group.minimumText || (group.minimumPrice ?? "")} onChange={(e) => patchRateGroup(group.rowIds, { minimum_price: e.target.value === "" || Number.isNaN(Number(e.target.value)) ? null : Number(e.target.value), minimum_text: e.target.value })} /> : money(group.minimumPrice)}</td>
