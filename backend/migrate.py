@@ -32,14 +32,20 @@ def migrate() -> None:
                 connection.execute(text(f'ALTER TABLE {child} DROP CONSTRAINT "{name}", ADD CONSTRAINT "{name}" '
                                         'FOREIGN KEY (plan_id) REFERENCES pricing_plans(id) ON DELETE CASCADE'))
         # One rate per destination and size column; this index also serves lookups by plan.
-        connection.execute(text("""
-            DO $$ BEGIN
-                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uq_pricing_rates_plan_destination_band') THEN
-                    ALTER TABLE pricing_rates ADD CONSTRAINT uq_pricing_rates_plan_destination_band
-                        UNIQUE (plan_id, destination, band_label);
-                END IF;
-            END $$
-        """))
+        if not connection.execute(text(
+                "SELECT 1 FROM pg_constraint WHERE conname = 'uq_pricing_rates_plan_destination_band'")).first():
+            # Pricing already uses the first row by sort order; the extra copies are never read.
+            removed = connection.execute(text("""
+                DELETE FROM pricing_rates WHERE id IN (
+                    SELECT id FROM (
+                        SELECT id, row_number() OVER (
+                            PARTITION BY plan_id, destination, band_label ORDER BY sort_order, id) AS position
+                        FROM pricing_rates) ranked
+                    WHERE position > 1)
+            """)).rowcount
+            logger.info("Removed %s duplicate pricing rate rows", removed)
+            connection.execute(text('ALTER TABLE pricing_rates ADD CONSTRAINT uq_pricing_rates_plan_destination_band '
+                                    'UNIQUE (plan_id, destination, band_label)'))
         connection.execute(text('DROP INDEX IF EXISTS ix_pricing_rates_plan_id'))
         connection.execute(text('ALTER TABLE inventory_edit_items ADD COLUMN IF NOT EXISTS set_id VARCHAR(36)'))
         connection.execute(text('ALTER TABLE inventory_edit_items ADD COLUMN IF NOT EXISTS set_name VARCHAR(200)'))
