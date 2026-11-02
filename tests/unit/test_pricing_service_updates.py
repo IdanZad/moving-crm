@@ -44,7 +44,9 @@ def test_real_pricing_save_keeps_service_and_client_data():
     node=next(n for n in ast.parse(path.read_text(encoding='utf-8')).body if getattr(n,'name','')=='update_pricing_plan')
     node.decorator_list=[]
     scope={name:getattr(models,name) for name in ('PricingPlan','PricingRule','PricingRate','PricingService','User')}
-    scope.update(PlanUpdate=Row,Session=Session,Depends=Depends,require_admin=lambda:None,get_db=lambda:None,HTTPException=HTTPException,json=json)
+    from pickup_areas import set_pickup_areas
+    scope.update(PlanUpdate=Row,Session=Session,Depends=Depends,require_admin=lambda:None,get_db=lambda:None,HTTPException=HTTPException,json=json,
+                 set_pickup_areas=set_pickup_areas)
     exec(compile(ast.Module(body=[node],type_ignores=[]),str(path),'exec'),scope)
     engine=create_engine('sqlite://')
     models.Base.metadata.create_all(engine)

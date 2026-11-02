@@ -119,8 +119,8 @@ def test_oregon_long_distance_selects_book_with_destination_coverage():
                  match_region_from_address=match_region_from_address, local_route_matches=lambda *args:False,
                  LocalPricingRoute=MagicMock())
     exec(compile(ast.Module(body=nodes, type_ignores=[]), str(source), 'exec'), scope)
-    east = SimpleNamespace(company_id='co', pickup_regions='MD', name='East', rates=[SimpleNamespace(destination='GA')])
-    west = SimpleNamespace(company_id='co', pickup_regions='MD', name='West', rates=[SimpleNamespace(destination='Oregon (970-979)')])
+    east = SimpleNamespace(company_id='co', pickup_rows=[SimpleNamespace(state='MD', zip_code='')], name='East', rates=[SimpleNamespace(destination='GA')])
+    west = SimpleNamespace(company_id='co', pickup_rows=[SimpleNamespace(state='MD', zip_code='')], name='West', rates=[SimpleNamespace(destination='Oregon (970-979)')])
     job = SimpleNamespace(company_id='co', pickup_zip='Rockville, MD, USA', delivery_zip='Eugene, Oregon 97405')
     db = MagicMock()
     db.query.return_value.filter.return_value.order_by.return_value.all.return_value = []

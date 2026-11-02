@@ -902,7 +902,6 @@ class PricingPlan(Base):
     source_key = Column(String(500), nullable=False, unique=True)
     source_file = Column(String(255), nullable=False, default="")
     source_sheet = Column(String(255), nullable=False, default="")
-    pickup_regions = Column(Text, nullable=False, default="")
     fuel_percent = Column(Numeric(7, 3))
     price_valid_days = Column(Integer, nullable=False, default=7, server_default='7')
     item_materials = Column(Text, nullable=True)
@@ -922,6 +921,10 @@ class PricingPlan(Base):
     services = relationship(
         "PricingService", cascade="all, delete-orphan", order_by="PricingService.sort_order"
     )
+    pickup_rows = relationship(
+        "PricingPickupArea", cascade="all, delete-orphan", lazy="selectin",
+        order_by="[PricingPickupArea.state, PricingPickupArea.zip_code]",
+    )
 
     def summary_dict(self):
         from pickup_areas import pickup_areas, pickup_summary
@@ -932,8 +935,8 @@ class PricingPlan(Base):
             "name": self.name,
             "source_file": self.source_file,
             "source_sheet": self.source_sheet,
-            "pickup_regions": pickup_summary(self.pickup_regions),
-            "pickup_areas": pickup_areas(self.pickup_regions),
+            "pickup_regions": pickup_summary(pickup_areas(self)),
+            "pickup_areas": pickup_areas(self),
             "fuel_percent": float(self.fuel_percent) if self.fuel_percent is not None else None,
             "price_valid_days": self.price_valid_days,
             "active": bool(self.active),
@@ -950,6 +953,20 @@ class PricingPlan(Base):
             "rates": [row.to_dict() for row in self.rates],
             "services": [row.to_dict() for row in self.services],
         }
+
+
+class PricingPickupArea(Base):
+    """One pickup state per row; a blank ZIP code covers the whole state."""
+    __tablename__ = "pricing_plan_pickup_areas"
+    __table_args__ = (
+        UniqueConstraint("plan_id", "state", "zip_code", name="uq_pricing_plan_pickup_areas"),
+    )
+
+    id = Column(String(36), primary_key=True, default=_uuid)
+    # The unique (plan_id, state, zip_code) index also serves lookups by plan_id.
+    plan_id = Column(String(36), ForeignKey("pricing_plans.id", ondelete="CASCADE"), nullable=False)
+    state = Column(String(2), nullable=False)
+    zip_code = Column(String(5), nullable=False, default="", server_default="")
 
 
 class PricingRule(Base):

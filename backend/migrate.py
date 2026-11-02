@@ -20,6 +20,8 @@ def migrate() -> None:
         EstimateSignature.__table__.create(connection, checkfirst=True)
         connection.execute(text('ALTER TABLE estimate_signatures ADD COLUMN IF NOT EXISTS report_id TEXT'))
         InventoryCatalogSet.__table__.create(connection, checkfirst=True)
+        from pickup_areas import migrate_pickup_regions
+        logger.info("Copied %s pricing pickup area rows", migrate_pickup_regions(connection))
         connection.execute(text('ALTER TABLE inventory_edit_items ADD COLUMN IF NOT EXISTS set_id VARCHAR(36)'))
         connection.execute(text('ALTER TABLE inventory_edit_items ADD COLUMN IF NOT EXISTS set_name VARCHAR(200)'))
         from followup_tasks import install as install_followup_tasks

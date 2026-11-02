@@ -23,7 +23,7 @@ class Row(SimpleNamespace):
 
 class SectionSaveTests(unittest.TestCase):
     def setUp(self):
-        self.plan = Row(services=[], rates=[], rules=[Row(id='rule', description='keep')], pickup_regions='original', name='Original', fuel_percent=13)
+        self.plan = Row(services=[], rates=[], rules=[Row(id='rule', description='keep')], pickup_rows=['original'], name='Original', fuel_percent=13)
         self.plan.to_dict = lambda: {}
         tree = ast.parse((BACKEND / 'routes/pricing.py').read_text(encoding='utf-8'))
         handler = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'update_pricing_section')
@@ -55,7 +55,7 @@ class SectionSaveTests(unittest.TestCase):
                 self.save(section, services=[Row(id='target', name='Target', comments=prefix+'new', rate_text='20')])
                 self.assertEqual(changed.rate_text, '20')
                 self.assertEqual(vars(untouched), dict(id='other', name='Other', comments='other', rate_text='99', sort_order=1))
-                self.assertEqual(self.plan.pickup_regions, 'original')
+                self.assertEqual(self.plan.pickup_rows, ['original'])
                 self.assertEqual(self.plan.fuel_percent, 13)
                 self.assertEqual(self.plan.rules[0].description, 'keep')
 
@@ -66,7 +66,7 @@ class SectionSaveTests(unittest.TestCase):
         self.assertIs(self.plan.services, services)
         self.assertIs(self.plan.rules, rules)
         self.assertIs(self.plan.rates, rates)
-        self.assertEqual(self.plan.pickup_regions, 'original')
+        self.assertEqual(self.plan.pickup_rows, ['original'])
 
     def test_adjustments_save_preserves_discounts_and_other_cards(self):
         fee = Row(id='fee', name='Stairs', comments='STAIRS:config', rate_text='99', sort_order=0)
@@ -99,7 +99,7 @@ class SectionSaveTests(unittest.TestCase):
         self.save('rates', rates=[Row(id='rate', destination='NY', band_label='Standard', rate=6)])
         self.assertEqual(self.plan.rates[0].rate, 6)
         self.assertIs(self.plan.services[0], service)
-        self.assertEqual(self.plan.pickup_regions, 'original')
+        self.assertEqual(self.plan.pickup_rows, ['original'])
 
     def test_rejects_other_section_fields(self):
         with self.assertRaises(HttpError):

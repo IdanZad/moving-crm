@@ -114,7 +114,7 @@ def test_saved_estimate_and_address_changes(monkeypatch):
             db.add(models.Company(id='co',name='Test'))
             lead=models.Lead(id='lead',full_name='Test',company_id='co',volume='24')
             job=models.LeadJob(id='job',lead_id='lead',company_id='co',pickup_zip='20850',delivery_zip='05401')
-            plan=models.PricingPlan(id='plan',source_key='plan',company_id='co',company_name='Test',name='East',pickup_regions='MD',active=True)
+            plan=models.PricingPlan(id='plan',source_key='plan',company_id='co',company_name='Test',name='East',pickup_rows=[models.PricingPickupArea(state='MD')],active=True)
             plan.services=[models.PricingService(name='Destination fees',rate_text='',comments=services([rule()])[0].comments)]
             plan.rates=[models.PricingRate(destination='VT',band_label='286+',cubic_feet_min=286,rate=5,minimum_price=1500)]
             db.add_all([lead,job,plan]);db.commit()

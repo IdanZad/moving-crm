@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from charge_errors import isolated_charge, pending_line
 
-from pickup_areas import PickupArea, pickup_areas, pickup_summary, pickup_match_score, select_pickup_plan
+from pickup_areas import PickupArea, pickup_areas, pickup_summary, pickup_match_score, select_pickup_plan, set_pickup_areas
 
 from datetime import date, datetime
 from decimal import Decimal
@@ -107,8 +107,8 @@ def _plan_summary_rows(plans: list[PricingPlan], db: Session) -> list[dict]:
             "name": plan.name,
             "source_file": plan.source_file,
             "source_sheet": plan.source_sheet,
-            "pickup_regions": pickup_summary(plan.pickup_regions),
-            "pickup_areas": pickup_areas(plan.pickup_regions),
+            "pickup_regions": pickup_summary(pickup_areas(plan)),
+            "pickup_areas": pickup_areas(plan),
             "fuel_percent": float(plan.fuel_percent) if plan.fuel_percent is not None else None,
             "active": bool(plan.active),
             "rate_count": 0,
@@ -120,7 +120,7 @@ def _plan_summary_rows(plans: list[PricingPlan], db: Session) -> list[dict]:
 
 
 def _plan_matches_pickup(plan: PricingPlan, pickup_state: str, pickup_zip: str = "") -> bool:
-    return bool(pickup_match_score(plan.pickup_regions or plan.name, pickup_state, pickup_zip))
+    return bool(pickup_match_score(pickup_areas(plan), pickup_state, pickup_zip))
 
 
 def _plan_destination_for_delivery(
@@ -2022,9 +2022,7 @@ def update_pricing_plan(
         states = [area.state for area in body.pickup_areas]
         if len(states) != len(set(states)):
             raise HTTPException(400, 'Add each state once and enter its ZIP codes in the same row')
-        plan.pickup_regions = json.dumps([area.model_dump() for area in body.pickup_areas])
-    else:
-        plan.pickup_regions = body.pickup_regions.strip()
+        set_pickup_areas(plan, [area.model_dump() for area in body.pickup_areas])
     plan.fuel_percent = body.fuel_percent
     plan.price_valid_days = getattr(body, 'price_valid_days', 7)
     plan.active = body.active
@@ -2132,7 +2130,7 @@ def update_pricing_section(plan_id: str, section: str, body: SectionUpdate, user
         areas = body.pickup_areas
         if areas is None or len({area.state for area in areas}) != len(areas):
             raise HTTPException(422, 'Add each pickup state only once.')
-        plan.pickup_regions = json.dumps([area.model_dump() for area in areas])
+        set_pickup_areas(plan, [area.model_dump() for area in areas])
     elif section == 'rates':
         if not body.rates:
             raise HTTPException(422, 'At least one pricing rate is required.')
