@@ -25,7 +25,7 @@ from shuttle import SHUTTLE_PREFIX, ShuttleCard, shuttle_card, shuttle_option
 from delivery_fees import ORIGIN_FEE_PREFIX, origin_fee, origin_fee_card, DELIVERY_FEE_PREFIX, DeliveryFeeCard, delivery_fee, delivery_fee_card
 from storage_pricing import STORAGE_PREFIX, StorageCard, storage_card, storage_quote
 from extra_stops import EXTRA_STOPS_PREFIX, ExtraStopsCard, stops_card, save_stops_card
-from elevator_pricing import ELEVATOR_PREFIX, ElevatorCard, elevator_card, elevator_quote
+from elevator_pricing import ELEVATOR_PREFIX, ElevatorCard, elevator_card, elevator_quote, plan_elevator_card, save_elevator_card
 from long_carry_pricing import LONG_CARRY_PREFIX, LongCarryCard, long_carry_card, long_carry_quote
 from stairs_pricing import STAIRS_PREFIX, StairsCard, stairs_card, stairs_quote
 from models import (
@@ -963,7 +963,7 @@ def compute_plan_calculation(plan: PricingPlan, body: CalculationInput, customer
         })
 
     try:
-        config = elevator_card(plan.services)
+        config = plan_elevator_card(plan)
         elevator = elevator_quote(config, {}, {}, cubic_feet)
         if elevator:
             saved = {row['location']: {'revision': row['revision'], 'uses_elevator': getattr(body, row['location'] + '_elevator')} for row in elevator['locations']}
@@ -1347,7 +1347,7 @@ def customer_elevator(lead, job, db, plan=None, move_type=None):
     state, zip_code = delivery_location(job.delivery_zip or '')
     destination = _plan_destination_for_delivery(plan, job.delivery_zip or '', state, zip_code)
     saved = json.loads(job.customer_packing_package or '{}').get('elevator', {})
-    return elevator_quote(elevator_card(plan.services), {'pickup': job.pickup_zip or '', 'delivery': job.delivery_zip or ''},
+    return elevator_quote(plan_elevator_card(plan), {'pickup': job.pickup_zip or '', 'delivery': job.delivery_zip or ''},
                         saved, _rounded_cubic_feet(lead.volume))
 
 
@@ -1914,7 +1914,7 @@ def calculate_pricing(
     except Exception as error:
         input_failures.append(pending_line('long-carry', 'Long carry', error))
     try:
-        elevator = elevator_card(plan.services)
+        elevator = plan_elevator_card(plan)
         if elevator and elevator.enabled and (body.pickup_elevator is None or body.delivery_elevator is None):
             raise HTTPException(422, 'Answer whether an elevator is needed at pickup and delivery.')
     except Exception as error:
@@ -2002,6 +2002,9 @@ def update_pricing_plan(
     stop_cards = [row for row in body.services if row.comments.startswith(EXTRA_STOPS_PREFIX)]
     body.services = [row for row in body.services if not row.comments.startswith(EXTRA_STOPS_PREFIX)]
     save_stops_card(plan, ExtraStopsCard.model_validate_json(stop_cards[0].comments[len(EXTRA_STOPS_PREFIX):]) if stop_cards else None)
+    elevator_cards = [row for row in body.services if row.comments.startswith(ELEVATOR_PREFIX)]
+    body.services = [row for row in body.services if not row.comments.startswith(ELEVATOR_PREFIX)]
+    save_elevator_card(plan, ElevatorCard.model_validate_json(elevator_cards[0].comments[len(ELEVATOR_PREFIX):]) if elevator_cards else None)
     service_updates = prepare_service_updates(list(plan.services), body.services)
     from pricing_row_updates import prepare_row_updates
     rule_updates = prepare_row_updates(list(plan.rules), body.rules, ('category', 'title'), ('description',))
@@ -2124,6 +2127,10 @@ def update_pricing_section(plan_id: str, section: str, body: SectionUpdate, user
         if body.services is None or any(not row.comments.startswith(EXTRA_STOPS_PREFIX) for row in body.services):
             raise HTTPException(422, 'Service belongs to a different pricing section.')
         save_stops_card(plan, ExtraStopsCard.model_validate_json(body.services[0].comments[len(EXTRA_STOPS_PREFIX):]) if body.services else None)
+    elif section == 'elevator':
+        if body.services is None or any(not row.comments.startswith(ELEVATOR_PREFIX) for row in body.services):
+            raise HTTPException(422, 'Service belongs to a different pricing section.')
+        save_elevator_card(plan, ElevatorCard.model_validate_json(body.services[0].comments[len(ELEVATOR_PREFIX):]) if body.services else None)
     elif section == 'pickup':
         areas = body.pickup_areas
         if areas is None or len({area.state for area in areas}) != len(areas):

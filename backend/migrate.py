@@ -83,6 +83,8 @@ def migrate() -> None:
             logger.info("Copied the administration fee from rule text for %s pricing plans", from_rules)
         from extra_stops import migrate_stops_cards
         logger.info("Moved additional stop pricing for %s pricing plans", migrate_stops_cards(connection))
+        from elevator_pricing import migrate_elevator_cards
+        logger.info("Moved elevator pricing for %s pricing plans", migrate_elevator_cards(connection))
         # Jobs priced while the old "All Jobs" rule line was charged next to the new fee: zero that
         # line, as a recalculation would, and take it out of the job, published and lead totals.
         if connection.execute(text("""
