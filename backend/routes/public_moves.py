@@ -883,7 +883,9 @@ def _estimate_document(access, db):
     from item_selectors import inventory_selectors
     data['item_services'] = inventory_selectors(access, db)
     from company_documents import estimate_documents
-    data['documents'] = estimate_documents(db.get(Lead, access.lead_id), db.get(LeadJob, access.job_id), db)
+    job = db.get(LeadJob, access.job_id)
+    data['documents'] = estimate_documents(db.get(Lead, access.lead_id), job, db)
+    data['customer_notes'] = (job.customer_notes if job else '') or ''
     return data, rows
 
 
