@@ -19,11 +19,11 @@ from sqlalchemy.orm import Session
 
 from auth import get_current_user, require_admin
 from database import get_db
-from long_distance_packing import PACKING_CARD_PREFIX, PackingCard, MaterialRate, packing_card
+from long_distance_packing import PACKING_CARD_PREFIX, PackingCard, MaterialRate, packing_card, plan_packing_card, save_packing_card
 from material_calculation import MaterialItem, calculate_materials, customer_material_quotes
-from shuttle import SHUTTLE_PREFIX, ShuttleCard, shuttle_card, shuttle_option
-from delivery_fees import ORIGIN_FEE_PREFIX, origin_fee, origin_fee_card, DELIVERY_FEE_PREFIX, DeliveryFeeCard, delivery_fee, delivery_fee_card
-from storage_pricing import STORAGE_PREFIX, StorageCard, storage_card, storage_quote
+from shuttle import SHUTTLE_PREFIX, ShuttleCard, shuttle_card, shuttle_option, plan_shuttle_card, save_shuttle_card
+from delivery_fees import ORIGIN_FEE_PREFIX, origin_fee, origin_fee_card, DELIVERY_FEE_PREFIX, DeliveryFeeCard, delivery_fee, delivery_fee_card, save_fee_card
+from storage_pricing import STORAGE_PREFIX, StorageCard, storage_card, storage_quote, plan_storage_card, save_storage_card
 from extra_stops import EXTRA_STOPS_PREFIX, ExtraStopsCard, stops_card, save_stops_card
 from elevator_pricing import ELEVATOR_PREFIX, ElevatorCard, elevator_card, elevator_quote, plan_elevator_card, save_elevator_card
 from long_carry_pricing import LONG_CARRY_PREFIX, LongCarryCard, long_carry_card, long_carry_quote, plan_long_carry_card, save_long_carry_card
@@ -328,8 +328,7 @@ def _parsed_move_date(value: str) -> date | None:
         return None
 
 
-BULKY_ITEM_MARKER = "__bulky_item__"
-BULKY_ITEM_PREFIX = f"{BULKY_ITEM_MARKER}:"
+from bulky_items import BULKY_ITEM_MARKER, BULKY_ITEM_PREFIX, is_bulky_row, item_prices, save_bulky_items
 
 
 def _normalize_item_name(value: str) -> str:
@@ -341,22 +340,11 @@ def _box_base_name(value: str) -> str:
 
 
 def _is_bulky_service(service: PricingService) -> bool:
-    return service.comments == BULKY_ITEM_MARKER or service.comments.startswith(BULKY_ITEM_PREFIX)
+    return is_bulky_row(service)
 
 
-def _bulky_item_prices(service: PricingService) -> dict[str, str]:
-    if service.comments.startswith(BULKY_ITEM_PREFIX):
-        try:
-            data = json.loads(service.comments[len(BULKY_ITEM_PREFIX):])
-            if isinstance(data, dict):
-                return {
-                    "handling": str(data.get("handling") or service.rate_text or ""),
-                    "packing": str(data.get("packing") or ""),
-                    "crating": str(data.get("crating") or ""),
-                }
-        except (TypeError, ValueError):
-            pass
-    return {"handling": service.rate_text or "", "packing": "", "crating": ""}
+def _bulky_item_prices(item) -> dict[str, str]:
+    return item_prices(item)
 
 
 def _service_charge(service: PricingService) -> dict:
@@ -529,8 +517,6 @@ def _bulky_item_charges(services: list[PricingService], item_names: list[str], r
         return []
     charges: list[dict] = []
     for service in services:
-        if not _is_bulky_service(service):
-            continue
         matched_count = matched_counts.get(_normalize_item_name(service.name), 0)
         if matched_count <= 0:
             continue
@@ -885,7 +871,8 @@ def compute_plan_calculation(plan: PricingPlan, body: CalculationInput, customer
             failures.append(pending_line(key, name, error))
     for service in plan.services:
         collect(f'packing:{service.id}', service.name, lambda service=service: _packing_service_charges([service], service_volume, body.quantities))
-        collect(f'bulky:{service.id}', service.name, lambda service=service: _bulky_item_charges([service], body.bulky_items))
+    for item in plan.bulky_items:
+        collect(f'bulky:{item.id}', item.name, lambda item=item: _bulky_item_charges([item], body.bulky_items))
     # Customer prices never use the plan's additional services & adjustments rules.
     for rule in [] if customer_price else plan.rules:
         if rule.category.startswith('discount_'):
@@ -1014,7 +1001,7 @@ def compute_plan_calculation(plan: PricingPlan, body: CalculationInput, customer
     except Exception as error:
         failures.append(pending_line('stairs', 'Stairs', error))
     try:
-        storage = storage_quote(storage_card(plan.services), _parsed_move_date(body.move_date), body.available_date,
+        storage = storage_quote(plan_storage_card(plan), _parsed_move_date(body.move_date), body.available_date,
                                 cubic_feet, _service_billable_volume(plan, body.destination, 0))
         if storage and storage['valid']:
             calculated.append({'id': 'storage-periods', 'name': 'Storage', 'description': storage['description'],
@@ -1026,7 +1013,7 @@ def compute_plan_calculation(plan: PricingPlan, body: CalculationInput, customer
         failures.append(pending_line('storage', 'Storage', error))
     try:
         if body.pickup_address:
-            fee = origin_fee(plan.services, body.pickup_address)
+            fee = origin_fee(plan, body.pickup_address)
             if fee:
                 calculated.append({'id': 'origin-mileage', 'name': 'Origin fees',
                                    'description': fee['description'], 'calculation_type': 'fixed',
@@ -1038,7 +1025,7 @@ def compute_plan_calculation(plan: PricingPlan, body: CalculationInput, customer
         failures.append(pending_line('origin-fees', 'Origin fees', error))
     try:
         if body.delivery_address:
-            fee = delivery_fee(plan.services, body.delivery_address)
+            fee = delivery_fee(plan, body.delivery_address)
             if fee:
                 calculated.append({'id': 'delivery-mileage', 'name': 'Destination fees',
                                    'description': fee['description'], 'calculation_type': 'fixed',
@@ -1047,7 +1034,7 @@ def compute_plan_calculation(plan: PricingPlan, body: CalculationInput, customer
                                    'amount': float(fee['amount'])})
                 total += fee['amount']
             state, zip_code = delivery_location(body.delivery_address)
-            card = shuttle_card(plan.services)
+            card = plan_shuttle_card(plan)
             option = shuttle_option(card, body.delivery_address, state, zip_code, cubic_feet,
                                     _service_billable_volume(plan, body.destination, 0), {})
             if option and (option['automatic'] or body.shuttle_access is False):
@@ -1085,9 +1072,7 @@ def customer_packing_options(lead, job, db, plan=None, move_type=None):
     selected = {item_id: 'packing' for item_id in saved} if isinstance(saved, list) else saved
     multiplier = Decimal('0.5') if move_type.lower() == 'local' else Decimal(1)
     options = []
-    for service in plan.services:
-        if not _is_bulky_service(service):
-            continue
+    for service in plan.bulky_items:
         count = sum(_normalize_item_name(n) == _normalize_item_name(service.name) for n in names)
         prices = _bulky_item_prices(service)
         services = []
@@ -1115,7 +1100,7 @@ def customer_packing_package(lead, job, db, plan=None, move_type=None, selection
         move_type, plan = infer_job_move_type(lead, job, db)
     if not plan or not move_type or move_type.lower() == 'local':
         return None
-    card = packing_card(plan.services)
+    card = plan_packing_card(plan)
     if card is None:
         return None
     volume = _rounded_cubic_feet(lead.volume)
@@ -1323,7 +1308,7 @@ def customer_shuttle(lead, job, db, plan=None, move_type=None):
     state, zip_code = delivery_location(job.delivery_zip or '')
     destination = _plan_destination_for_delivery(plan, job.delivery_zip or '', state, zip_code)
     saved = json.loads(job.customer_packing_package or '{}').get('shuttle', {})
-    return shuttle_option(shuttle_card(plan.services), job.delivery_zip or '', state, zip_code,
+    return shuttle_option(plan_shuttle_card(plan), job.delivery_zip or '', state, zip_code,
                           _rounded_cubic_feet(lead.volume), _service_billable_volume(plan, destination, 0), saved)
 
 
@@ -1335,7 +1320,7 @@ def customer_storage(lead, job, db, plan=None, move_type=None):
     state, zip_code = delivery_location(job.delivery_zip or '')
     destination = _plan_destination_for_delivery(plan, job.delivery_zip or '', state, zip_code)
     available = json.loads(job.customer_packing_package or '{}').get('storage_date', '')
-    return storage_quote(storage_card(plan.services), _parsed_move_date(job.move_date or ''), available,
+    return storage_quote(plan_storage_card(plan), _parsed_move_date(job.move_date or ''), available,
                          _rounded_cubic_feet(lead.volume), _service_billable_volume(plan, destination, 0))
 
 
@@ -1548,7 +1533,7 @@ def sync_customer_shuttle_charge(lead, job, db):
 
 def job_delivery_fee(job, plan):
     selection = json.loads(job.customer_packing_package or '{}')
-    fee = delivery_fee(plan.services, job.delivery_zip or '', selection.get('delivery_route')) if plan else None
+    fee = delivery_fee(plan, job.delivery_zip or '', selection.get('delivery_route')) if plan else None
     if fee:
         selection['delivery_route'] = {key: fee[key] for key in ('revision', 'meters')}
     else:
@@ -1590,7 +1575,7 @@ def sync_delivery_fee(lead, job, db):
 
 def job_origin_fee(job, plan):
     selection = json.loads(job.customer_packing_package or '{}')
-    fee = origin_fee(plan.services, job.pickup_zip or '', selection.get('origin_route')) if plan else None
+    fee = origin_fee(plan, job.pickup_zip or '', selection.get('origin_route')) if plan else None
     if fee:
         selection['origin_route'] = {key: fee[key] for key in ('revision', 'meters')}
     else:
@@ -1727,7 +1712,7 @@ def calculate_and_save_lead_job_price(lead: Lead, job: LeadJob, db: Session) -> 
             + _material_item_names(_job_spark_inventory_items(job.id, db))
         )
         bulky_charges = []
-        for service in matched_plan.services:
+        for service in matched_plan.bulky_items:
             try:
                 bulky_charges.extend(_bulky_item_charges([service], all_materials, rate_multiplier=0.5))
             except Exception as error:
@@ -1884,19 +1869,19 @@ def calculate_pricing(
     plan = _plan_or_404(db, user, plan_id)
     input_failures = []
     try:
-        card = origin_fee_card(plan.services)
+        card = origin_fee_card(plan)
         if not body.pickup_address and card and card.enabled and card.rules:
             raise HTTPException(422, 'Enter the pickup address or ZIP to calculate origin fees.')
     except Exception as error:
         input_failures.append(pending_line('origin-fees', 'Origin fees', error))
     try:
-        card = delivery_fee_card(plan.services)
+        card = delivery_fee_card(plan)
         if not body.delivery_address and card and card.enabled and card.rules:
             raise HTTPException(422, 'Enter the delivery address or ZIP to calculate destination fees.')
     except Exception as error:
         input_failures.append(pending_line('destination-fees', 'Destination fees', error))
     try:
-        storage = storage_quote(storage_card(plan.services), _parsed_move_date(body.move_date), body.available_date, body.cubic_feet, 0)
+        storage = storage_quote(plan_storage_card(plan), _parsed_move_date(body.move_date), body.available_date, body.cubic_feet, 0)
         if storage and not storage['valid']:
             raise HTTPException(422, 'Choose a pickup date and an earliest delivery date on or after pickup to calculate storage.')
     except Exception as error:
@@ -2011,6 +1996,22 @@ def update_pricing_plan(
     stairs_cards = [row for row in body.services if row.comments.startswith(STAIRS_PREFIX)]
     body.services = [row for row in body.services if not row.comments.startswith(STAIRS_PREFIX)]
     save_stairs_card(plan, StairsCard.model_validate_json(stairs_cards[0].comments[len(STAIRS_PREFIX):]) if stairs_cards else None)
+    storage_cards = [row for row in body.services if row.comments.startswith(STORAGE_PREFIX)]
+    body.services = [row for row in body.services if not row.comments.startswith(STORAGE_PREFIX)]
+    save_storage_card(plan, StorageCard.model_validate_json(storage_cards[0].comments[len(STORAGE_PREFIX):]) if storage_cards else None)
+    shuttle_cards = [row for row in body.services if row.comments.startswith(SHUTTLE_PREFIX)]
+    body.services = [row for row in body.services if not row.comments.startswith(SHUTTLE_PREFIX)]
+    save_shuttle_card(plan, ShuttleCard.model_validate_json(shuttle_cards[0].comments[len(SHUTTLE_PREFIX):]) if shuttle_cards else None)
+    packing_cards = [row for row in body.services if row.comments.startswith(PACKING_CARD_PREFIX)]
+    body.services = [row for row in body.services if not row.comments.startswith(PACKING_CARD_PREFIX)]
+    save_packing_card(plan, PackingCard.model_validate_json(packing_cards[0].comments[len(PACKING_CARD_PREFIX):]) if packing_cards else None)
+    bulky_rows = [row for row in body.services if is_bulky_row(row)]
+    body.services = [row for row in body.services if not is_bulky_row(row)]
+    save_bulky_items(plan, bulky_rows, max((row.sort_order for row in plan.services), default=-1) + 1)
+    for prefix in (ORIGIN_FEE_PREFIX, DELIVERY_FEE_PREFIX):
+        fee_cards = [row for row in body.services if row.comments.startswith(prefix)]
+        body.services = [row for row in body.services if not row.comments.startswith(prefix)]
+        save_fee_card(plan, prefix, DeliveryFeeCard.model_validate_json(fee_cards[0].comments[len(prefix):]) if fee_cards else None)
     service_updates = prepare_service_updates(list(plan.services), body.services)
     from pricing_row_updates import prepare_row_updates
     rule_updates = prepare_row_updates(list(plan.rules), body.rules, ('category', 'title'), ('description',))
@@ -2145,6 +2146,38 @@ def update_pricing_section(plan_id: str, section: str, body: SectionUpdate, user
         if body.services is None or any(not row.comments.startswith(STAIRS_PREFIX) for row in body.services):
             raise HTTPException(422, 'Service belongs to a different pricing section.')
         save_stairs_card(plan, StairsCard.model_validate_json(body.services[0].comments[len(STAIRS_PREFIX):]) if body.services else None)
+    elif section == 'storage':
+        if body.services is None or any(not row.comments.startswith(STORAGE_PREFIX) for row in body.services):
+            raise HTTPException(422, 'Service belongs to a different pricing section.')
+        save_storage_card(plan, StorageCard.model_validate_json(body.services[0].comments[len(STORAGE_PREFIX):]) if body.services else None)
+    elif section == 'shuttle':
+        if body.services is None or any(not row.comments.startswith(SHUTTLE_PREFIX) for row in body.services):
+            raise HTTPException(422, 'Service belongs to a different pricing section.')
+        save_shuttle_card(plan, ShuttleCard.model_validate_json(body.services[0].comments[len(SHUTTLE_PREFIX):]) if body.services else None)
+    elif section in ('originFees', 'deliveryFees'):
+        prefix = prefixes[section]
+        if body.services is None or any(not row.comments.startswith(prefix) for row in body.services):
+            raise HTTPException(422, 'Service belongs to a different pricing section.')
+        save_fee_card(plan, prefix, DeliveryFeeCard.model_validate_json(body.services[0].comments[len(prefix):]) if body.services else None)
+    elif section in ('packing', 'materials'):
+        if body.services is None or any(not row.comments.startswith(PACKING_CARD_PREFIX) for row in body.services):
+            raise HTTPException(422, 'Service belongs to a different pricing section.')
+        if len(body.services) != 1:
+            raise HTTPException(422, 'One packing configuration is required.')
+        incoming = PackingCard.model_validate_json(body.services[0].comments[len(PACKING_CARD_PREFIX):])
+        current = plan_packing_card(plan)
+        # Each section replaces only its own part; the other part is kept exactly as saved.
+        rates = incoming if section == 'packing' else current
+        materials = incoming.materials if section == 'materials' else (current.materials if current else [])
+        save_packing_card(plan, PackingCard.model_construct(
+            full=rates.full if rates else None, partial=rates.partial if rates else None,
+            unpacking=rates.unpacking if rates else None, items=[], materials=materials))
+    elif section == 'bulkyItems':
+        if body.services is None or any(not is_bulky_row(row) for row in body.services):
+            raise HTTPException(422, 'Service belongs to a different pricing section.')
+        first = min((item.sort_order for item in plan.bulky_items),
+                    default=max((row.sort_order for row in plan.services), default=-1) + 1)
+        save_bulky_items(plan, body.services, first)
     elif section == 'pickup':
         areas = body.pickup_areas
         if areas is None or len({area.state for area in areas}) != len(areas):
@@ -2162,29 +2195,6 @@ def update_pricing_section(plan_id: str, section: str, body: SectionUpdate, user
             row.sort_order = index
             retained.append(row)
         plan.rates[:] = retained
-    else:
-        prefix = prefixes[section]
-        belongs = lambda row: row.comments.startswith(prefix)
-        if body.services is None or any(not belongs(row) for row in body.services):
-            raise HTTPException(422, 'Service belongs to a different pricing section.')
-        existing = [row for row in plan.services if belongs(row)]
-        updates = prepare_service_updates(existing, body.services)
-        retained = [row for row in plan.services if not belongs(row)]
-        if section in {'packing', 'materials'} and len(updates) != 1:
-            raise HTTPException(422, 'One packing configuration is required.')
-        for current, value in updates:
-            row = current if current is not None else PricingService()
-            comments = value.comments
-            if section in {'packing', 'materials'}:
-                from pricing_section_merge import merge_packing
-                comments = PACKING_CARD_PREFIX + json.dumps(merge_packing(
-                    json.loads(current.comments[len(prefix):]) if current else {},
-                    json.loads(value.comments[len(prefix):]), section))
-            row.name, row.rate_text, row.comments = value.name.strip(), value.rate_text.strip(), comments
-            if current is None:
-                row.sort_order = max((r.sort_order for r in plan.services), default=-1) + 1
-            retained.append(row)
-        plan.services[:] = retained
     db.commit()
     db.refresh(plan)
     return plan.to_dict()

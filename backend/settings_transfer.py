@@ -16,7 +16,9 @@ from models import Base
 TABLES = ('companies', 'inventory_room_types', 'inventory_catalog_items',
           'pricing_plans', 'pricing_rules', 'pricing_rates', 'pricing_services',
           'pricing_plan_pickup_areas', 'pricing_extra_stops', 'pricing_elevator', 'pricing_elevator_tiers',
-          'pricing_long_carry', 'pricing_stairs',
+          'pricing_long_carry', 'pricing_stairs', 'pricing_storage', 'pricing_shuttle', 'pricing_shuttle_areas',
+          'pricing_mileage_fees', 'pricing_mileage_fee_rules', 'pricing_mileage_fee_zips',
+          'pricing_bulky_items', 'pricing_packing', 'pricing_materials',
           'local_pricing_routes')
 COMPANY_FIELDS = {'id', 'name', 'color', 'logo', 'customer_questions', 'phone',
                   'office_address', 'dot_number', 'sender_email', 'timezone',
@@ -182,7 +184,10 @@ def apply_settings(connection, bundle):
         values['source_key'] = existing['source_key'] if existing else 'settings-transfer:' + values['id']
         upsert('pricing_plans', values, ['id'])
     for name in ('pricing_rules', 'pricing_rates', 'pricing_services', 'pricing_plan_pickup_areas', 'pricing_extra_stops',
-                 'pricing_elevator', 'pricing_elevator_tiers', 'pricing_long_carry', 'pricing_stairs'):
+                 'pricing_elevator', 'pricing_elevator_tiers', 'pricing_long_carry', 'pricing_stairs', 'pricing_storage',
+                 'pricing_shuttle', 'pricing_shuttle_areas',
+                 'pricing_mileage_fees', 'pricing_mileage_fee_rules', 'pricing_mileage_fee_zips',
+                 'pricing_bulky_items', 'pricing_packing', 'pricing_materials'):
         target = table(name)
         connection.execute(target.delete().where(target.c.plan_id.in_(list(plans.values()))))
         for row in source[name]:

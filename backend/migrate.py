@@ -89,6 +89,16 @@ def migrate() -> None:
         logger.info("Moved long carry pricing for %s pricing plans", migrate_long_carry_cards(connection))
         from stairs_pricing import migrate_stairs_cards
         logger.info("Moved stairs pricing for %s pricing plans", migrate_stairs_cards(connection))
+        from storage_pricing import migrate_storage_cards
+        logger.info("Moved storage pricing for %s pricing plans", migrate_storage_cards(connection))
+        from shuttle import migrate_shuttle_cards
+        logger.info("Moved delivery shuttle pricing for %s pricing plans", migrate_shuttle_cards(connection))
+        from delivery_fees import migrate_fee_cards
+        logger.info("Moved %s origin and destination fee cards", migrate_fee_cards(connection))
+        from bulky_items import migrate_bulky_items
+        logger.info("Moved %s bulky item rates", migrate_bulky_items(connection))
+        from long_distance_packing import migrate_packing_cards
+        logger.info("Moved packing rates and materials for %s pricing plans", migrate_packing_cards(connection))
         # Jobs priced while the old "All Jobs" rule line was charged next to the new fee: zero that
         # line, as a recalculation would, and take it out of the job, published and lead totals.
         if connection.execute(text("""
