@@ -65,6 +65,8 @@ def migrate() -> None:
                     connection.execute(text('DELETE FROM pricing_services WHERE id = :id'), {'id': rows[0].id})
                     moved += 1
             logger.info("Moved the administration fee to %s pricing plans", moved)
+        from extra_stops import migrate_stops_cards
+        logger.info("Moved additional stop pricing for %s pricing plans", migrate_stops_cards(connection))
         connection.execute(text('ALTER TABLE inventory_edit_items ADD COLUMN IF NOT EXISTS set_id VARCHAR(36)'))
         connection.execute(text('ALTER TABLE inventory_edit_items ADD COLUMN IF NOT EXISTS set_name VARCHAR(200)'))
         from followup_tasks import install as install_followup_tasks

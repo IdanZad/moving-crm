@@ -927,6 +927,7 @@ class PricingPlan(Base):
         "PricingPickupArea", cascade="all, delete-orphan", lazy="selectin",
         order_by="[PricingPickupArea.state, PricingPickupArea.zip_code]",
     )
+    extra_stops = relationship("PricingExtraStops", uselist=False, cascade="all, delete-orphan", lazy="selectin")
 
     def summary_dict(self):
         from pickup_areas import pickup_areas, pickup_summary
@@ -945,7 +946,7 @@ class PricingPlan(Base):
             "active": bool(self.active),
             "rate_count": len(self.rates),
             "rule_count": len(self.rules),
-            "service_count": len(self.services),
+            "service_count": len(self.services) + (1 if self.extra_stops else 0),
             "updated_at": self.updated_at.isoformat() if self.updated_at else "",
         }
 
@@ -954,8 +955,27 @@ class PricingPlan(Base):
             **self.summary_dict(),
             "rules": [row.to_dict() for row in self.rules],
             "rates": [row.to_dict() for row in self.rates],
-            "services": [row.to_dict() for row in self.services],
+            "services": [row.to_dict() for row in self.services] + self._card_rows(),
         }
+
+    def _card_rows(self):
+        # Pricing cards kept in their own tables are presented as service rows, as the API always has.
+        from extra_stops import stops_service_row
+        return [row for row in [stops_service_row(self)] if row]
+
+
+class PricingExtraStops(Base):
+    """Additional stop pricing: one row per plan."""
+    __tablename__ = "pricing_extra_stops"
+
+    plan_id = Column(String(36), ForeignKey("pricing_plans.id", ondelete="CASCADE"), primary_key=True)
+    enabled = Column(Boolean, nullable=False, default=False)
+    pickup_free_miles = Column(Numeric(10, 2), nullable=False)
+    pickup_stop_fee = Column(Numeric(10, 2), nullable=False)
+    pickup_per_mile = Column(Numeric(10, 2), nullable=False)
+    delivery_free_miles = Column(Numeric(10, 2), nullable=False)
+    delivery_stop_fee = Column(Numeric(10, 2), nullable=False)
+    delivery_per_mile = Column(Numeric(10, 2), nullable=False)
 
 
 class PricingPickupArea(Base):

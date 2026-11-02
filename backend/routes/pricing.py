@@ -24,7 +24,7 @@ from material_calculation import MaterialItem, calculate_materials, customer_mat
 from shuttle import SHUTTLE_PREFIX, ShuttleCard, shuttle_card, shuttle_option
 from delivery_fees import ORIGIN_FEE_PREFIX, origin_fee, origin_fee_card, DELIVERY_FEE_PREFIX, DeliveryFeeCard, delivery_fee, delivery_fee_card
 from storage_pricing import STORAGE_PREFIX, StorageCard, storage_card, storage_quote
-from extra_stops import EXTRA_STOPS_PREFIX, ExtraStopsCard, stops_card
+from extra_stops import EXTRA_STOPS_PREFIX, ExtraStopsCard, stops_card, save_stops_card
 from elevator_pricing import ELEVATOR_PREFIX, ElevatorCard, elevator_card, elevator_quote
 from long_carry_pricing import LONG_CARRY_PREFIX, LongCarryCard, long_carry_card, long_carry_quote
 from stairs_pricing import STAIRS_PREFIX, StairsCard, stairs_card, stairs_quote
@@ -2028,6 +2028,9 @@ def update_pricing_plan(
         raise HTTPException(status_code=400, detail="At least one pricing rate is required")
 
     from pricing_service_updates import prepare_service_updates
+    stop_cards = [row for row in body.services if row.comments.startswith(EXTRA_STOPS_PREFIX)]
+    body.services = [row for row in body.services if not row.comments.startswith(EXTRA_STOPS_PREFIX)]
+    save_stops_card(plan, ExtraStopsCard.model_validate_json(stop_cards[0].comments[len(EXTRA_STOPS_PREFIX):]) if stop_cards else None)
     service_updates = prepare_service_updates(list(plan.services), body.services)
     from pricing_row_updates import prepare_row_updates
     rule_updates = prepare_row_updates(list(plan.rules), body.rules, ('category', 'title'), ('description',))
@@ -2146,6 +2149,10 @@ def update_pricing_section(plan_id: str, section: str, body: SectionUpdate, user
                     row.sort_order = max((r.sort_order for r in collection), default=-1) + 1
                 retained.append(row)
             collection[:] = retained
+    elif section == 'extraStops':
+        if body.services is None or any(not row.comments.startswith(EXTRA_STOPS_PREFIX) for row in body.services):
+            raise HTTPException(422, 'Service belongs to a different pricing section.')
+        save_stops_card(plan, ExtraStopsCard.model_validate_json(body.services[0].comments[len(EXTRA_STOPS_PREFIX):]) if body.services else None)
     elif section == 'pickup':
         areas = body.pickup_areas
         if areas is None or len({area.state for area in areas}) != len(areas):
