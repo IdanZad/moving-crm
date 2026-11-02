@@ -22,6 +22,25 @@ def migrate() -> None:
         InventoryCatalogSet.__table__.create(connection, checkfirst=True)
         from pickup_areas import migrate_pickup_regions
         logger.info("Copied %s pricing pickup area rows", migrate_pickup_regions(connection))
+        # Every table under a pricing plan is deleted with the plan by the database.
+        for child in ('pricing_rates', 'pricing_rules', 'pricing_services'):
+            for (name,) in connection.execute(text("""
+                SELECT conname FROM pg_constraint
+                WHERE conrelid = CAST(:child AS regclass) AND confrelid = 'pricing_plans'::regclass
+                  AND contype = 'f' AND confdeltype <> 'c'
+            """), {'child': child}).all():
+                connection.execute(text(f'ALTER TABLE {child} DROP CONSTRAINT "{name}", ADD CONSTRAINT "{name}" '
+                                        'FOREIGN KEY (plan_id) REFERENCES pricing_plans(id) ON DELETE CASCADE'))
+        # One rate per destination and size column; this index also serves lookups by plan.
+        connection.execute(text("""
+            DO $$ BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uq_pricing_rates_plan_destination_band') THEN
+                    ALTER TABLE pricing_rates ADD CONSTRAINT uq_pricing_rates_plan_destination_band
+                        UNIQUE (plan_id, destination, band_label);
+                END IF;
+            END $$
+        """))
+        connection.execute(text('DROP INDEX IF EXISTS ix_pricing_rates_plan_id'))
         connection.execute(text('ALTER TABLE inventory_edit_items ADD COLUMN IF NOT EXISTS set_id VARCHAR(36)'))
         connection.execute(text('ALTER TABLE inventory_edit_items ADD COLUMN IF NOT EXISTS set_name VARCHAR(200)'))
         from followup_tasks import install as install_followup_tasks

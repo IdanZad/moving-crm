@@ -493,6 +493,10 @@ export default function PricingPage() {
   }
   async function saveSection(section: string) {
     if (!draft) return;
+    if (section === 'rates') {
+      const keys = draft.rates.filter(row => row.destination.trim() && row.band_label.trim()).map(row => `${row.destination.trim()}|${row.band_label.trim()}`);
+      if (new Set(keys).size !== keys.length) { setError('Each destination can appear only once.'); return; }
+    }
     setSaving(true); setError(''); setNotice('');
     const body = section === 'rates' ? {rates: draft.rates.map(row => ({...row, id: pendingRateGroups.some(ids => row.id && ids.includes(row.id)) ? undefined : row.id}))}
       : section === 'pickup' ? {pickup_areas: draft.pickup_areas || []}
@@ -985,7 +989,7 @@ export default function PricingPage() {
                 ) : null}
               </section>
 
-              <PricingSection title="Transportation rates" count={rateRows.length} open={openSections.rates} toggle={() => setOpenSections((s) => ({ ...s, rates: !s.rates }))} onDoubleClick={() => startServiceEdit('rates')} actions={<>{serviceEditActions('rates')}{user?.role === 'admin' && <button type="button" className="slds-button pricing-section-action pricing-section-text-action" disabled={saving} onClick={() => { startServiceEdit('rates'); addDestination(); }}>+ Add destination</button>}</>}>
+              <PricingSection title="Transportation rates" count={rateRows.length} open={openSections.rates} toggle={() => setOpenSections((s) => ({ ...s, rates: !s.rates }))} onDoubleClick={() => startServiceEdit('rates')} actions={<>{serviceEditActions('rates')}</>}>
                 <div className="pricing-table-toolbar"><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search destination or ZIP area" /><span>{bands.length} cubic-foot bands</span></div>
                 <div className="pricing-rate-table-wrap">
                   <table className="pricing-rate-table">
@@ -1010,6 +1014,7 @@ export default function PricingPage() {
                     </tbody>
                   </table>
                 </div>
+                {editingSection('rates') && <button type="button" className="slds-button" disabled={saving} onClick={addDestination}>+ Add destination</button>}
               </PricingSection>
 
               <PricingSection title="Additional stop pricing" count={active.services.filter(isExtraStopsCard).length} open={openSections.extraStops} toggle={() => setOpenSections(s => ({ ...s, extraStops: !s.extraStops }))} onDoubleClick={() => startServiceEdit('extraStops')} actions={serviceEditActions('extraStops')}>

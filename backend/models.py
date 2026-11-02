@@ -973,7 +973,7 @@ class PricingRule(Base):
     __tablename__ = "pricing_rules"
 
     id = Column(String(36), primary_key=True, default=_uuid)
-    plan_id = Column(String(36), ForeignKey("pricing_plans.id"), nullable=False, index=True)
+    plan_id = Column(String(36), ForeignKey("pricing_plans.id", ondelete="CASCADE"), nullable=False, index=True)
     category = Column(String(50), nullable=False, default="general")
     title = Column(String(255), nullable=False, default="Pricing rule")
     description = Column(Text, nullable=False, default="")
@@ -991,9 +991,13 @@ class PricingRule(Base):
 
 class PricingRate(Base):
     __tablename__ = "pricing_rates"
+    __table_args__ = (
+        UniqueConstraint("plan_id", "destination", "band_label", name="uq_pricing_rates_plan_destination_band"),
+    )
 
     id = Column(String(36), primary_key=True, default=_uuid)
-    plan_id = Column(String(36), ForeignKey("pricing_plans.id"), nullable=False, index=True)
+    # The unique (plan_id, destination, band_label) index also serves lookups by plan_id.
+    plan_id = Column(String(36), ForeignKey("pricing_plans.id", ondelete="CASCADE"), nullable=False)
     destination = Column(String(255), nullable=False, index=True)
     destination_group = Column(String(100), nullable=False, default="")
     minimum_price = Column(Numeric(12, 2))
@@ -1025,7 +1029,7 @@ class PricingService(Base):
     __tablename__ = "pricing_services"
 
     id = Column(String(36), primary_key=True, default=_uuid)
-    plan_id = Column(String(36), ForeignKey("pricing_plans.id"), nullable=False, index=True)
+    plan_id = Column(String(36), ForeignKey("pricing_plans.id", ondelete="CASCADE"), nullable=False, index=True)
     name = Column(String(500), nullable=False)
     rate_text = Column(String(255), nullable=False, default="")
     comments = Column(Text, nullable=False, default="")
