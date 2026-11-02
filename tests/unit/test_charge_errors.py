@@ -55,7 +55,7 @@ def load_calculator():
         _rounded_cubic_feet=lambda value: value,
         _transportation_price=lambda *args: (None, Decimal(100), None, Decimal(100)),
         _service_billable_volume=lambda *args: 100,
-        _seasonal_charge=lambda *args: None, _parsed_move_date=lambda value: value,
+        _parsed_move_date=lambda value: value,
         _packing_service_charges=lambda *args: [], _bulky_item_charges=lambda *args: [],
         _rule_charges=lambda rule: [rule.charge],
         _charge_amount=lambda charge, *args: Decimal(charge['rate']),

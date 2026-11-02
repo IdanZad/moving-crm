@@ -21,7 +21,7 @@ def pricing():
         for arg in node.args.args:
             arg.annotation = None
     scope = {"Decimal": Decimal, "math": math, "re": re,
-             "_seasonal_charge": lambda *args: None, "_parsed_move_date": lambda *args: None,
+             "_parsed_move_date": lambda *args: None,
              "_packing_service_charges": lambda *args: [], "_bulky_item_charges": lambda *args: []}
     exec(compile(ast.Module(body=nodes, type_ignores=[]), str(source), "exec"), scope)
     return scope

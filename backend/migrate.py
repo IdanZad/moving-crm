@@ -65,8 +65,63 @@ def migrate() -> None:
                     connection.execute(text('DELETE FROM pricing_services WHERE id = :id'), {'id': rows[0].id})
                     moved += 1
             logger.info("Moved the administration fee to %s pricing plans", moved)
+        # Plans whose fee existed only as "DESTINATION & ORIGIN (All Jobs) $N" in a rule's text.
+        if connection.execute(text("""
+            INSERT INTO app_settings(key, value) VALUES ('migration:admin-fee-from-rules-v1', 'copied')
+            ON CONFLICT (key) DO NOTHING RETURNING key
+        """)).scalar():
+            import re
+            from_rules = 0
+            for plan_id, description in connection.execute(text("""
+                    SELECT p.id, r.description FROM pricing_plans p JOIN pricing_rules r ON r.plan_id = p.id
+                    WHERE p.admin_fee IS NULL ORDER BY p.id, r.sort_order""")).all():
+                match = re.search(r"destination\s*&\s*origin\s*\(all jobs\)\s*\$?\s*(\d+(?:\.\d+)?)", description, re.IGNORECASE)
+                if match and connection.execute(text(
+                        'UPDATE pricing_plans SET admin_fee = :amount WHERE id = :id AND admin_fee IS NULL'),
+                        {'amount': match.group(1), 'id': plan_id}).rowcount:
+                    from_rules += 1
+            logger.info("Copied the administration fee from rule text for %s pricing plans", from_rules)
         from extra_stops import migrate_stops_cards
         logger.info("Moved additional stop pricing for %s pricing plans", migrate_stops_cards(connection))
+        # Jobs priced while the old "All Jobs" rule line was charged next to the new fee: zero that
+        # line, as a recalculation would, and take it out of the job, published and lead totals.
+        if connection.execute(text("""
+            INSERT INTO app_settings(key, value) VALUES ('migration:admin-fee-duplicate-charges-v1', 'cleared')
+            ON CONFLICT (key) DO NOTHING RETURNING key
+        """)).scalar():
+            import json
+            duplicates = connection.execute(text("""
+                SELECT c.id, c.job_id, j.lead_id, c.total_cost, c.discount_amount
+                FROM lead_job_charges c JOIN lead_jobs j ON j.id = c.job_id
+                WHERE c.name = 'DESTINATION & ORIGIN (All Jobs)' AND (c.total_cost <> 0 OR c.discount_amount <> 0)
+                  AND EXISTS (SELECT 1 FROM lead_job_charges fee
+                              WHERE fee.job_id = c.job_id AND fee.name = 'Origin destination & administration Fee')
+            """)).all()
+            for charge_id, job_id, lead_id, total, discount in duplicates:
+                connection.execute(text(
+                    'UPDATE lead_job_charges SET subtotal = 0, discount_amount = 0, total_cost = 0 WHERE id = :id'),
+                    {'id': charge_id})
+                connection.execute(text('UPDATE lead_jobs SET price = price - :total WHERE id = :id AND price IS NOT NULL'),
+                                   {'total': total, 'id': job_id})
+                connection.execute(text(
+                    'UPDATE public_move_access SET published_price = published_price - :total '
+                    'WHERE job_id = :id AND published_price IS NOT NULL'), {'total': total, 'id': job_id})
+                raw = connection.execute(text('SELECT estimated_total FROM leads WHERE id = :id'), {'id': lead_id}).scalar()
+                summary = json.loads(raw) if raw else None
+                if isinstance(summary, dict):
+                    summary['subtotal'] = float(summary.get('subtotal', 0)) - float(total + discount)
+                    summary['finalTotal'] = float(summary.get('finalTotal', 0)) - float(total)
+                    connection.execute(text('UPDATE leads SET estimated_total = :value WHERE id = :id'),
+                                       {'value': json.dumps(summary), 'id': lead_id})
+            logger.info("Removed %s duplicate administration fee charges", len(duplicates))
+            # Every other job keeps its amount; the line takes the new name.
+            renamed = connection.execute(text("""
+                UPDATE lead_job_charges SET name = 'Origin destination & administration Fee'
+                WHERE name = 'DESTINATION & ORIGIN (All Jobs)' AND NOT EXISTS (
+                    SELECT 1 FROM lead_job_charges fee
+                    WHERE fee.job_id = lead_job_charges.job_id AND fee.name = 'Origin destination & administration Fee')
+            """)).rowcount
+            logger.info("Renamed %s administration fee charges", renamed)
         connection.execute(text('ALTER TABLE inventory_edit_items ADD COLUMN IF NOT EXISTS set_id VARCHAR(36)'))
         connection.execute(text('ALTER TABLE inventory_edit_items ADD COLUMN IF NOT EXISTS set_name VARCHAR(200)'))
         from followup_tasks import install as install_followup_tasks

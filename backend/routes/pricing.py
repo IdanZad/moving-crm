@@ -359,38 +359,6 @@ def _bulky_item_prices(service: PricingService) -> dict[str, str]:
     return {"handling": service.rate_text or "", "packing": "", "crating": ""}
 
 
-def _seasonal_charge(plan: PricingPlan, move_date: date | None) -> dict | None:
-    if not move_date:
-        return None
-    for rule in plan.rules:
-        if rule.category.startswith('discount_'):
-            continue
-        description = rule.description
-        match = re.search(
-            r"(?:after|of)\s+(Sep(?:tember)?|Oct(?:ober)?)\s+(\d{1,2})(?:st|nd|rd|th)?"
-            r".*?(?:reduce|take)\s+\$?(\d+(?:\.\d+)?)\s*(?:off|per)?\s*(?:the\s+rate|per\s*cf|/cf)?",
-            description,
-            re.IGNORECASE,
-        )
-        if not match:
-            continue
-        month = 9 if match.group(1).lower().startswith("sep") else 10
-        threshold = date(move_date.year, month, int(match.group(2)))
-        applies = move_date >= threshold
-        return {
-            "id": f"seasonal:{rule.id}",
-            "name": "Seasonal rate adjustment",
-            "description": description,
-            "calculation_type": "per_cf",
-            "rate": -float(match.group(3)),
-            "default_selected": applies,
-            "automatic": True,
-            "applies": applies,
-            "quantity_label": "",
-        }
-    return None
-
-
 def _service_charge(service: PricingService) -> dict:
     combined = f"{service.rate_text} {service.comments}".strip()
     lower = combined.lower()
@@ -869,7 +837,7 @@ def customer_minimum_volume(lead, job, db):
     return float(_service_billable_volume(plan, destination, 0))
 
 
-def compute_plan_calculation(plan: PricingPlan, body: CalculationInput) -> dict:
+def compute_plan_calculation(plan: PricingPlan, body: CalculationInput, customer_price: bool = False) -> dict:
     cubic_feet = _rounded_cubic_feet(body.cubic_feet)
     failures = []
     try:
@@ -915,14 +883,17 @@ def compute_plan_calculation(plan: PricingPlan, body: CalculationInput) -> dict:
             charges.extend(calculate())
         except Exception as error:
             failures.append(pending_line(key, name, error))
-    collect('seasonal', 'Seasonal charge', lambda: [row for row in [_seasonal_charge(plan, _parsed_move_date(body.move_date))] if row])
     for service in plan.services:
         collect(f'packing:{service.id}', service.name, lambda service=service: _packing_service_charges([service], service_volume, body.quantities))
         collect(f'bulky:{service.id}', service.name, lambda service=service: _bulky_item_charges([service], body.bulky_items))
-    for rule in plan.rules:
+    # Customer prices never use the plan's additional services & adjustments rules.
+    for rule in [] if customer_price else plan.rules:
         if rule.category.startswith('discount_'):
             continue
-        collect(f'rule:{rule.id}', getattr(rule, 'name', None) or 'Pricing rule', lambda rule=rule: _rule_charges(rule))
+        # The plan's administration fee replaces the "All Jobs" charge a rule's text may describe.
+        collect(f'rule:{rule.id}', getattr(rule, 'name', None) or 'Pricing rule', lambda rule=rule: [
+            charge for charge in _rule_charges(rule)
+            if plan.admin_fee is None or not charge['id'].endswith(':all-jobs')])
 
     deduped: list[dict] = []
     seen = set()
@@ -1829,7 +1800,7 @@ def calculate_and_save_lead_job_price(lead: Lead, job: LeadJob, db: Session) -> 
             move_date=job.move_date or "",
             bulky_items=all_materials,
         )
-        quote = compute_plan_calculation(matched_plan, calc_body)
+        quote = compute_plan_calculation(matched_plan, calc_body, customer_price=True)
         total = quote.get("total", 0.0)
         if total <= 0 and not quote.get("incomplete"):
             return no_price(f'Pricing sheet "{matched_plan.name}" returned no positive total for destination "{destination}" and {vol} cu ft.')
