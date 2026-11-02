@@ -547,7 +547,7 @@ def _assert_meeting_before_move_date(job: LeadJob | None, stamps: list[datetime]
     if limit < datetime.utcnow():
         return
     if max(stamps) > limit:
-        raise HTTPException(400, f'{label} must be on or before the move date.')
+        raise HTTPException(400, f'{label} must be on or before the pickup date.')
 
 
 def meeting_dict(row):
@@ -764,6 +764,7 @@ def _move_details(access, db, *, refresh_report=True, include_pricing=True, pric
         'office_address': active_company.office_address or '' if active_company else '',
         'color': company_color,
         'logo': active_company.logo if active_company else '',
+        'dot_number': active_company.dot_number or '' if active_company else '',
     }
 
     packing_items = []
@@ -1840,7 +1841,7 @@ def update_customer_details(body: CustomerDetailsPatch, access: PublicMoveAccess
                     if req.scheduled_at:
                         _assert_meeting_before_move_date(job, [req.scheduled_at], label='Existing appointment')
             except ValueError as e:
-                raise HTTPException(400, {'field': 'move_date', 'message': 'Enter a valid move date.'}) from e
+                raise HTTPException(400, {'field': 'move_date', 'message': 'Enter a valid pickup date.'}) from e
 
     if body.pickup is not None or body.delivery is not None:
         job.pickup_zip = new_pickup

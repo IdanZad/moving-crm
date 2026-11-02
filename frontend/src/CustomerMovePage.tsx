@@ -15,6 +15,7 @@ import { savedPhotos, storePhoto, removePhoto } from './photoDrafts';
 import ManualInventoryModal from "./ManualInventoryModal";
 import EstimateSigning from './EstimateSigning';
 import EstimateViewer from './EstimateViewer';
+import InventoryViewer from './InventoryViewer';
 import type { EditableReportFile } from "./ReportFileList";
 import ReportFileGallery from "./ReportFileGallery";
 import ReportHistory, { type ReportRun } from "./ReportHistory";
@@ -554,6 +555,7 @@ export default function CustomerMovePage() {
   const [preparedEstimate, setPreparedEstimate] = useState('');
   const [preparedSigned, setPreparedSigned] = useState(false);
   const [estimateViewerOpen, setEstimateViewerOpen] = useState(false);
+  const [inventoryPdf, setInventoryPdf] = useState<{ url: string; filename: string } | null>(null);
   const [estimatePdfUrl, setEstimatePdfUrl] = useState('');
   async function openEstimate() {
     setPdfError('');
@@ -985,7 +987,7 @@ export default function CustomerMovePage() {
                 ) : (
                   <form className="cm-route-edit" noValidate onSubmit={saveMoveDetails}>
                     <label>
-                      Move Date
+                      Pickup Date
                       <input type="date" value={moveDraft.move_date} aria-invalid={!!moveErrors.move_date} aria-describedby={moveErrors.move_date ? 'move-move_date-error' : undefined} onChange={e=>{clearMoveError('move_date');setMoveDraft(prev=>({...prev,move_date:e.target.value}));}} />
                       {moveErrors.move_date && <small id="move-move_date-error" className="cm-field-error" role="alert">{moveErrors.move_date}</small>}
                     </label>
@@ -1314,16 +1316,13 @@ export default function CustomerMovePage() {
               });
               if (!response.ok) {
                 const result = await response.json().catch(() => ({}));
-                throw new Error(typeof result.detail === 'string' ? result.detail : 'Could not download inventory. Please try again.');
+                throw new Error(typeof result.detail === 'string' ? result.detail : 'Could not load inventory. Please try again.');
               }
               const url = URL.createObjectURL(await response.blob());
-              const anchor = document.createElement('a');
               const clientName = (data.name || '').replace(/[<>:"/\\|?*\u0000-\u001f\u007f]/g, '').trim().replace(/\.+$/, '');
               const companyName = (data.company_details?.name || data.company || '').replace(/[<>:"/\\|?*\u0000-\u001f\u007f]/g, '').trim().replace(/\.+$/, '');
               const serverFilename = response.headers.get('Content-Disposition')?.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
-              anchor.href = url; anchor.download = serverFilename ? decodeURIComponent(serverFilename) : [companyName, 'Inventory', clientName].filter(Boolean).join(' - ') + '.pdf';
-              document.body.appendChild(anchor); anchor.click(); anchor.remove();
-              window.setTimeout(() => URL.revokeObjectURL(url), 60000);
+              setInventoryPdf({ url, filename: serverFilename ? decodeURIComponent(serverFilename) : [companyName, 'Inventory', clientName].filter(Boolean).join(' - ') + '.pdf' });
             }} submitActions={async (requestId, edits, revision, reportId) => {
               const result = await call('/inventory/actions', {request_id:requestId, revision, report_id:reportId, ...edits}, 'PATCH');
               setCalculationError(''); setReportState('idle');
@@ -1339,6 +1338,7 @@ export default function CustomerMovePage() {
               await refreshDetails();
               setCalculationError('');
             }} onClose={changed => { setShowInventoryList(false); if (changed) void refreshDetails(); }} />}
+            {inventoryPdf && <InventoryViewer url={inventoryPdf.url} filename={inventoryPdf.filename} onClose={() => { URL.revokeObjectURL(inventoryPdf.url); setInventoryPdf(null); }} />}
             {showQuestions && (
               <div className="cm-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="packing-title" onClick={event => { if (event.target === event.currentTarget) setShowQuestions(false); }}>
                 <div className="cm-modal-card">

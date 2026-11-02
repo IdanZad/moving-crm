@@ -95,11 +95,21 @@ def build_estimate_pdf(data, rows):
         return result
     company = data.get('company_details') or {}
     estimate = data['estimate']
-    story = [p(company.get('name') or data.get('company'), 'SectionEstimate'),
-             p(' | '.join(filter(None, [company.get('phone'), company.get('office_address')])), 'NoteEstimate'),
+    from inventory_pdf import company_logo_image
+    styles.add(ParagraphStyle(name='CompanyEstimate', parent=styles['SectionEstimate'], alignment=TA_RIGHT, spaceBefore=0))
+    styles.add(ParagraphStyle(name='CompanyDetailsEstimate', parent=styles['NoteEstimate'], alignment=TA_RIGHT))
+    company_block = [p(company.get('name') or data.get('company'), 'CompanyEstimate')]
+    company_block += [p(value, 'CompanyDetailsEstimate') for value in [company.get('office_address'), company.get('phone')] if value]
+    if company.get('dot_number'):
+        company_block.append(p(f"USDOT: {company['dot_number']}", 'CompanyDetailsEstimate'))
+    logo = company_logo_image(company.get('logo'))
+    header = Table([[logo, company_block]] if logo else [[company_block]], colWidths=[166, 356] if logo else [522], hAlign='LEFT')
+    header.setStyle(TableStyle([('VALIGN', (0, 0), (-1, -1), 'TOP'), ('LEFTPADDING', (0, 0), (-1, -1), 0),
+                                ('RIGHTPADDING', (0, 0), (-1, -1), 0)]))
+    story = [header,
              Spacer(1, 12), Paragraph('MOVING ESTIMATE', styles['Title']),
              p('Prepared ' + (data.get('prepared_at') or datetime.now(timezone.utc).strftime('%B %d, %Y (UTC)')), 'NoteEstimate')]
-    story.append(table([[p('CUSTOMER\n' + data.get('name', '')), p('MOVE DATE\n' + str(data.get('move_date') or 'Not scheduled'))],
+    story.append(table([[p('CUSTOMER\n' + data.get('name', '')), p('PICKUP DATE\n' + str(data.get('move_date') or 'Not scheduled'))],
                         [p('\n'.join(filter(None, [data.get('phone'), data.get('email')]))), p(('PARTIAL ESTIMATE\n' if any(c.get('pending') for c in estimate.get('charges', [])) else 'ESTIMATED TOTAL\n') + money(estimate['price']))],
                         [p('PICKUP\n' + data.get('pickup', '')), p('DELIVERY\n' + data.get('delivery', ''))]], [261, 261]))
     for stop in data.get('stops', []):
