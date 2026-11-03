@@ -33,17 +33,24 @@ function moverPackCount(item: { name: string; quantity: number; mover_pack?: boo
   if (item.mover_pack != null) return item.mover_pack ? item.quantity : 0;
   return /\(CP\)\s*$/i.test(item.name) ? item.quantity : 0;
 }
-function PackingChoice({ name, quantity, count, disabled, onChange }: { name: string; quantity: number; count: number; disabled: boolean; onChange: (count: number) => void }) {
-  const [open, setOpen] = useState(false);
+function PackingChoice({ name, quantity, count, disabled, open, setOpen, onChange }: { name: string; quantity: number; count: number; disabled: boolean; open: boolean; setOpen: (open: boolean) => void; onChange: (count: number) => void }) {
+  // Open state lives with the window, like item services, so changing a count never closes the menu.
+  const container = useRef<HTMLSpanElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const outside = (event: PointerEvent) => { if (!container.current?.contains(event.target as Node)) setOpen(false); };
+    document.addEventListener('pointerdown', outside);
+    return () => document.removeEventListener('pointerdown', outside);
+  }, [open, setOpen]);
   const trigger = useRef<HTMLButtonElement>(null);
   const movers = Math.max(0, Math.min(quantity, count));
   const summary = movers === quantity ? 'CP' : movers === 0 ? 'PBO' : `CP (${movers}), PBO (${quantity - movers})`;
   const rows: [string, number, (value: number) => number][] = [
     ['Movers pack', movers, value => value], ['You pack', quantity - movers, value => quantity - value]];
-  return <span className="mi-packing-choice mi-service-choice" onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false); }} onKeyDown={event => {
+  return <span ref={container} className="mi-packing-choice mi-service-choice" onBlur={event => { if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget as Node)) setOpen(false); }} onKeyDown={event => {
     if (event.key === 'Escape' && open) { event.preventDefault(); event.stopPropagation(); setOpen(false); trigger.current?.focus(); }
   }}>
-    <button ref={trigger} type="button" className="mi-packing-trigger" disabled={disabled} aria-expanded={open} aria-label={`Packing for ${name}: ${summary}`} onClick={() => setOpen(value => !value)}>
+    <button ref={trigger} type="button" className="mi-packing-trigger" disabled={disabled} aria-expanded={open} aria-label={`Packing for ${name}: ${summary}`} onClick={() => setOpen(!open)}>
       <span className="mi-service-summary"><span>{summary}</span></span><svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m3 4.5 3 3 3-3"/></svg>
     </button>
     {open && <span className="mi-packing-menu" role="group" aria-label="Who packs these boxes?">
@@ -117,7 +124,7 @@ function InventoryRow({ name, cuft, quantity, busy, photo, going = true, onGoing
       <span aria-label="Total volume in cubic feet"><span className="mi-mobile-label">Total volume</span>{totalVolumeLabel}<span className="mi-mobile-unit"> cu ft</span></span>
       <label><span className="mi-mobile-label">Quantity</span><input aria-label="Quantity" type="number" min="1" max="999" step="1" value={draft.quantity} disabled={busy} onChange={e => setDraft({ ...draft, quantity: e.target.value })} /></label>
     </> : <>
-      <div className={`mi-inventory-name${selectors.length ? ' mi-name-with-services' : ''}`}><span className="mi-item-name-label"><strong>{onMoverPackChange ? name.replace(/\s*\((?:CP|PBO)\)\s*$/i, '') : name}</strong>{onMoverPackChange && <PackingChoice name={name.replace(/\s*\((?:CP|PBO)\)\s*$/i, '')} quantity={quantity} count={moverPackCount} disabled={busy || packingLocked || !going} onChange={onMoverPackChange}/>}</span>
+      <div className={`mi-inventory-name${selectors.length ? ' mi-name-with-services' : ''}`}><span className="mi-item-name-label"><strong>{onMoverPackChange ? name.replace(/\s*\((?:CP|PBO)\)\s*$/i, '') : name}</strong>{onMoverPackChange && <PackingChoice name={name.replace(/\s*\((?:CP|PBO)\)\s*$/i, '')} quantity={quantity} count={moverPackCount} disabled={busy || packingLocked || !going} open={openService === `${serviceRowId}:packing`} setOpen={open => setOpenService(open ? `${serviceRowId}:packing` : '')} onChange={onMoverPackChange}/>}</span>
         {!!selectors.length && <span className="mi-item-services">{selectors.map(selector => <ServiceChoice key={selector.id} selector={selector} name={name} value={selections[selector.id]} quantity={quantity} disabled={serviceBusy || !going} open={openService === `${serviceRowId}:${selector.id}`} setOpen={open => setOpenService(open ? `${serviceRowId}:${selector.id}` : '')} onChange={value => onSelectionChange?.(selector.id, value)}/>)}</span>}
         {Object.entries(selections).filter(([id]) => !selectors.some(selector => selector.id === id)).map(([id, value]) => <span key={id} className="mi-item-services">{typeof value === 'string' ? value : Object.entries(value).filter(([, count]) => count > 0).map(([option, count]) => `${option} (${count})`).join(', ')}</span>)}
       </div>
