@@ -859,7 +859,7 @@ def _move_details(access, db, *, refresh_report=True, include_pricing=True, pric
     if estimate_only:
         # The estimate PDF shows this same data: what the page shows, as the page builds it.
         details, rows = estimate_data()
-        return dict(details, spark=spark_info, customer_notes=job.customer_notes or '',
+        return dict(details, spark=spark_info, customer_notes=job.customer_notes or '', job_id=job.id,
                     list_changed=False, estimate_needs_update=estimate_needs_update), rows
     # Built only when a signed copy exists to compare with.
     pricing_data['signature_status'] = estimate_signature_status(
