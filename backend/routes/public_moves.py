@@ -733,6 +733,12 @@ def move_section(section: Literal['move', 'inventory', 'media', 'volume', 'estim
     return result
 
 
+def customer_price(job):
+    """The customer's price: the total of the lines the customer page shows. SmartMoving's lines are not part of it."""
+    shown = [c for c in job.charges or [] if c.source != 'smartmoving']
+    return sum((Decimal(str(c.total_cost or 0)) for c in shown), Decimal(0)) if shown else None
+
+
 def estimate_charges(job, individual_charges=False):
     """The estimate's price lines as the customer page shows them."""
     charges = [
@@ -747,7 +753,7 @@ def estimate_charges(job, individual_charges=False):
             'discount_percent': round(float(c.discount_amount or 0) / float(c.subtotal) * 100, 2) if c.subtotal and c.subtotal > 0 else 0,
         }
         for c in (job.charges or [])
-        if (
+        if c.source != 'smartmoving' and (
             ((c.description or '').startswith('Calculation pending: ')) or (c.total_cost and float(c.total_cost) > 0) or (c.discount_amount and float(c.discount_amount) > 0)
         )
     ]
@@ -756,20 +762,12 @@ def estimate_charges(job, individual_charges=False):
 
 
 def _estimate_from(access, lead, job, charges):
-    """The saved estimate: the published price, else the job price, else the lead total."""
+    """The saved estimate: our lines and their total. SmartMoving's price and lines are the CRM lead's only."""
     from math import ceil
-    if access.published_at and access.published_price is not None:
-        return {'price': str(access.published_price), 'cuft': str(ceil(access.published_cuft or lead.volume or 0)), 'charges': charges}
-    if job.price is not None and (float(job.price) > 0 or any(c.get('pending') for c in charges)):
-        return {'price': str(job.price), 'cuft': str(ceil(lead.volume or 0)), 'charges': charges}
-    if lead.estimated_total:
-        try:
-            final_total = float(json.loads(lead.estimated_total).get('finalTotal') or 0)
-        except Exception:
-            return None
-        if final_total > 0:
-            return {'price': str(final_total), 'cuft': str(ceil(lead.volume or 0)), 'charges': charges}
-    return None
+    price = customer_price(job)
+    if price is None or (price <= 0 and not any(c.get('pending') for c in charges)):
+        return None
+    return {'price': str(price), 'cuft': str(ceil(access.published_cuft or lead.volume or 0)), 'charges': charges}
 
 
 def saved_estimate(access, lead, job, state, individual_charges=False):
@@ -948,7 +946,7 @@ def _pricing_delta(access, lead, job, db, kind, individual_charges):
     db.refresh(job)
     db.refresh(access)
     options = {part: builders[part](lead, job, db) for part in parts}
-    price = access.published_price if access.published_at and access.published_price is not None else job.price
+    price = customer_price(job)
     delta = {'saved': True, 'price': str(price) if price is not None else None,
              'charges': estimate_charges(job, individual_charges), 'options': options,
              'unanswered': unanswered_questions(options, package_saved='mode' in json.loads(job.customer_packing_package or '{}')),
@@ -974,7 +972,7 @@ def _item_answer_delta(access, lead, company, db, inventory_changed, individual_
         job = db.get(LeadJob, access.job_id)
         db.refresh(job)
         db.refresh(access)
-        price = access.published_price if access.published_at and access.published_price is not None else job.price
+        price = customer_price(job)
         options = _customer_pricing_options(lead, job, db)
         delta.update(price=str(price) if price is not None else None, charges=estimate_charges(job, individual_charges),
                      options={key: value for key, value in options.items() if key != 'minimum_cuft'},
@@ -1299,7 +1297,7 @@ def save_rep_discount(body: RepDiscountInput, request: Request, access: PublicMo
     # Only the price lines and total changed; send them back instead of reloading the page.
     db.refresh(job)
     db.refresh(access)
-    price = access.published_price if access.published_at and access.published_price is not None else job.price
+    price = customer_price(job)
     return {'saved': True, 'price': str(price) if price is not None else None, 'charges': estimate_charges(job, individual_charges=True)}
 
 

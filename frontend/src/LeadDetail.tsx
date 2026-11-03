@@ -89,6 +89,8 @@ type LeadJobChargeItem = {
   subtotal: number;
   discount_amount: number;
   total_cost: number;
+  // "smartmoving": synced from SmartMoving; shown here only, never on the customer page.
+  source: string;
 };
 type CopyConflict = { id: string; name: string; phone: string; email: string; company: string; smartmoving_id: string; matched_fields: string[] };
 type CopyLeadResult = {
@@ -669,6 +671,7 @@ export default function LeadDetail() {
                 subtotal: Number(row.subtotal || 0),
                 discount_amount: Number(row.discount_amount || 0),
                 total_cost: Number(row.total_cost || 0),
+                source: String(row.source || ""),
               };
             })
           : [],
@@ -3115,7 +3118,7 @@ export default function LeadDetail() {
                               return (
                               <div key={charge.id} className={isMaterials ? "job-materials-charge" : ""} style={{ border: "1px solid #e2e8f0", background: "#fff", borderRadius: 6, padding: 8, display: "grid", gap: 4 }}>
                                 <button type="button" disabled={!isMaterials} className="slds-button job-charge-heading" onClick={() => isMaterials && setExpandedMaterials((prev) => ({ ...prev, [job.id]: !prev[job.id] }))} aria-expanded={isMaterials ? isExpanded : undefined}>
-                                  <strong>{charge.name}{isMaterials ? <span aria-hidden="true"> {isExpanded ? "▴" : "▾"}</span> : null}</strong>
+                                  <strong>{charge.name}{charge.source === "smartmoving" ? <span title="Synced from SmartMoving; not shown on the customer page" style={{ marginLeft: 6, padding: "1px 6px", borderRadius: 4, background: "#e0e7ff", color: "#3730a3", fontSize: 10, fontWeight: 600 }}>SmartMoving</span> : null}{isMaterials ? <span aria-hidden="true"> {isExpanded ? "▴" : "▾"}</span> : null}</strong>
                                   <span>${charge.total_cost.toFixed(2)}</span>
                                 </button>
                                 {charge.description ? <div style={{ fontSize: 11, color: "#475569" }}>{charge.description}</div> : null}

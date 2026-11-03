@@ -629,6 +629,9 @@ class LeadJobCharge(Base):
     total_cost = Column(Numeric(12, 2), nullable=False, default=0)
     created_at = Column(DateTime(timezone=True), default=_now, index=True)
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now, index=True)
+    # 'smartmoving': synced from SmartMoving, shown only on the CRM lead. 'crm': our calculator and the customer's
+    # answers. Empty: saved before this was recorded.
+    source = Column(String(20), default='crm')
 
     job = relationship("LeadJob", back_populates="charges")
 
@@ -636,6 +639,7 @@ class LeadJobCharge(Base):
         return {
             "id": self.id,
             "job_id": self.job_id,
+            "source": self.source or "",
             "name": self.name or "",
             "description": self.description or "",
             "sort_order": int(self.sort_order or 0),

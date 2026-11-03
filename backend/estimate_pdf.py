@@ -234,16 +234,20 @@ def _summary(data, styles, p, table, link=True):
     package = data.get('packing_package') or {}
     minimum = package.get('minimum_cubic_feet')
     if minimum and float(minimum) > float(estimate.get('cuft') or 0):
-        story.append(p(f"Minimum billable volume for applicable services: {float(minimum):g} cu ft. This is a billing minimum, not your inventory volume.", 'NoteEstimate'))
+        story.append(p(f"Minimum billable volume for applicable services: {float(minimum):g} cu ft.", 'NoteEstimate'))
     charges = [[p('ITEM'), p('RATE / BASIS'), p('COST', 'RightEstimate')]]
     for charge in estimate.get('charges') or []:
         # Zero lines, including ones discounted to zero, are explained in their detail section.
         if _is_service(charge) or (not charge.get('pending') and not charge.get('total')):
             continue
         basis = charge.get('description') or 'Not specified'
-        rate = re.fullmatch(r'\$([\d,]+\.\d{2}) per cu ft(.*)', basis) if charge.get('name') == 'Transportation charge' else None
-        if rate:
-            basis = f"{float(estimate.get('cuft') or 0):,.2f} cuft @ ${rate[1]} per cuft{rate[2]}"
+        rate = re.fullmatch(r'\$([\d,]+\.\d{2}) per cu ft(?: \(minimum charge \$([\d,]+\.\d{2})\))?', basis) if charge.get('name') == 'Transportation charge' else None
+        if rate and rate[2]:
+            # The minimum charge covers every volume it is higher than: up to minimum / rate cu ft.
+            per_cuft, minimum_charge = float(rate[1].replace(',', '')), float(rate[2].replace(',', ''))
+            basis = f"Up to {int(minimum_charge // per_cuft)} cu ft: ${rate[2]} | Each additional cu ft: ${rate[1]}"
+        elif rate:
+            basis = f"{float(estimate.get('cuft') or 0):,.2f} cuft @ ${rate[1]} per cuft"
         if charge.get('discount_amount', 0) > 0:
             basis += f"\nBefore discount: {money(charge['subtotal'])}\nDiscount ({charge['discount_percent']:g}%): -{money(charge['discount_amount'])}"
         charges.append([p(charge['name']), p(basis, 'NoteEstimate'), p('Pending' if charge.get('pending') else money(charge['total']), 'RightEstimate')])

@@ -2371,10 +2371,12 @@ def _replace_job_charges(job: LeadJob, charges: list[LeadJobChargePayload | dict
     if not job.id:
         db.flush()
 
+    # Every charge list arriving here is SmartMoving's: it replaces SmartMoving's lines, never ours.
     from charge_updates import ChargeUpdates
     existing = db.query(LeadJobCharge).filter(LeadJobCharge.job_id == job.id).all()
-    updates = ChargeUpdates(db, existing, match_legacy_base=True)
+    updates = ChargeUpdates(db, existing, match_legacy_base=True, smartmoving=True)
     existing_ids = {row.id for row in existing}
+    ours = {row.id for row in existing if row.source == 'crm'}
 
     for index, charge in enumerate(charges):
         if isinstance(charge, dict):
@@ -2389,6 +2391,8 @@ def _replace_job_charges(job: LeadJob, charges: list[LeadJobChargePayload | dict
         if not charge_id and charge.pricing_key:
             from uuid import uuid5, NAMESPACE_URL
             charge_id = charge.pricing_key if charge.pricing_key.startswith('extra-stop:') else str(uuid5(NAMESPACE_URL, f'customer-packing:{job.id}:{charge.pricing_key}'))
+        if charge_id in ours:
+            charge_id = None  # A SmartMoving line never takes over one of ours.
         updates.add(LeadJobCharge(
             id=charge_id or str(uuid4()),
             job_id=job.id,
