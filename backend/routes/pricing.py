@@ -6,7 +6,8 @@ from charge_errors import isolated_charge, pending_line
 
 from pickup_areas import PickupArea, pickup_areas, pickup_summary, pickup_match_score, select_pickup_plan, set_pickup_areas
 
-from datetime import date, datetime
+from datetime import date, datetime, timezone
+import hashlib
 from decimal import Decimal
 import json
 import math
@@ -137,8 +138,37 @@ def _plan_destination_for_delivery(
     return destination
 
 
+def _pricing_match_key(lead, job, db):
+    """Fingerprint of everything a plan match depends on; it changes when any of them changes."""
+    company_id = job.company_id or lead.company_id
+    if not company_id:
+        return None
+    plans = db.query(func.count(PricingPlan.id), func.max(PricingPlan.updated_at)).filter(
+        PricingPlan.company_id == company_id, PricingPlan.active.is_(True)).one()
+    routes = db.query(func.count(LocalPricingRoute.id), func.max(LocalPricingRoute.updated_at)).filter(
+        LocalPricingRoute.company_id == company_id).one()
+    locations = json.loads(getattr(job, 'customer_packing_package', None) or '{}').get('pricing_locations', [])
+    source = [company_id, job.pickup_zip, job.delivery_zip, getattr(lead, 'move_type', None), locations, list(plans), list(routes)]
+    return hashlib.sha256(json.dumps(source, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def infer_job_move_type(lead, job, db, plans=None):
+    """The job's move type and pricing plan, matched once and reused until what they depend on changes."""
+    if plans is not None:
+        return _match_job_move_type(lead, job, db, plans)
+    key = _pricing_match_key(lead, job, db)
+    if key and getattr(job, 'pricing_match_key', None) == key:
+        plan_id = job.pricing_plan_id
+        return job.pricing_move_type, db.get(PricingPlan, plan_id) if plan_id else None
+    move_type, plan = _match_job_move_type(lead, job, db)
+    if key:
+        job.pricing_match_key, job.pricing_plan_id, job.pricing_move_type = key, plan.id if plan else None, move_type
+        job.minimum_cuft = None  # A new match may mean a different plan minimum.
+    return move_type, plan
+
+
 @with_job_locations
-def infer_job_move_type(
+def _match_job_move_type(
     lead: Lead,
     job: LeadJob,
     db: Session,
@@ -820,9 +850,13 @@ def customer_minimum_volume(lead, job, db):
     move_type, plan = infer_job_move_type(lead, job, db)
     if not plan or not move_type or move_type.lower() == 'local':
         return None
+    if getattr(job, 'minimum_cuft', None) is not None:
+        return float(job.minimum_cuft)
     state, zip_code = delivery_location(job.delivery_zip or '')
     destination = _plan_destination_for_delivery(plan, job.delivery_zip or '', state or '', zip_code or '')
-    return float(_service_billable_volume(plan, destination, 0))
+    minimum = float(_service_billable_volume(plan, destination, 0))
+    job.minimum_cuft = int(minimum)
+    return minimum
 
 
 def compute_plan_calculation(plan: PricingPlan, body: CalculationInput, customer_price: bool = False) -> dict:
@@ -2045,6 +2079,7 @@ def update_pricing_plan(
         service.sort_order = index
         retained_services.append(service)
     plan.services[:] = retained_services
+    plan.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(plan)
     return plan.to_dict()
@@ -2184,6 +2219,7 @@ def update_pricing_section(plan_id: str, section: str, body: SectionUpdate, user
             row.sort_order = index
             retained.append(row)
         plan.rates[:] = retained
+    plan.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(plan)
     return plan.to_dict()

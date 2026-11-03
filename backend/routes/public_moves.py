@@ -639,7 +639,7 @@ def move_summary(access: PublicMoveAccess = Depends(verified), db: Session = Dep
 
 
 @router.get('/api/public-moves/{access_id}/sections/{section}')
-def move_section(section: Literal['move', 'inventory', 'media', 'volume', 'pricing'], access: PublicMoveAccess = Depends(verified), db: Session = Depends(get_db), request: Request = None):
+def move_section(section: Literal['move', 'inventory', 'media', 'volume', 'estimate', 'pricing'], access: PublicMoveAccess = Depends(verified), db: Session = Depends(get_db), request: Request = None):
     lead, job = db.get(Lead, access.lead_id), db.get(LeadJob, access.job_id)
     if section == 'move':
         pickup, stops, delivery = _read_job_route(db, job)
@@ -664,6 +664,9 @@ def move_section(section: Literal['move', 'inventory', 'media', 'volume', 'prici
                     google_maps_browser_key=setting('GOOGLE_MAPS_BROWSER_KEY'),
                     editable_files=file_list(files), files=state.get('report_files', file_list(files)), files_changed={f.id for f in files} != previous,
                     new_file_count=sum(f.id not in previous for f in files) if 'report_files' in state else 0)
+    if section == 'estimate':
+        # The saved price and its lines, read as they are; the pricing section fills in the rest.
+        return {'estimate': saved_estimate(access, lead, job, state, is_rep_request(access, request))}
     if section == 'volume':
         return {'spark': {'id': state['last_spark_id'], 'source': state.get('report_source', 'liveswitch'), 'status': state.get('last_spark_status', 'queued'), 'shareUrl': state.get('last_spark_share_url'), 'cuft': state.get('spark_extracted_cuft'), 'update_error': state.get('notification_error')} if state.get('last_spark_id') else None}
     if _has_inventory_list(state):
@@ -674,7 +677,62 @@ def move_section(section: Literal['move', 'inventory', 'media', 'volume', 'prici
     from delivery_fees import browser_fee_routes
     from price_validity import price_is_locked
     result['mileage_routes'] = [] if price_is_locked(lead, job) else browser_fee_routes(lead, job, db)
+    # Keep a newly worked-out plan match, so the next load reads it instead of matching again.
+    from sqlalchemy import inspect as inspect_model
+    if any(inspect_model(job).attrs[name].history.has_changes() for name in ('pricing_match_key', 'minimum_cuft')):
+        db.commit()
     return result
+
+
+def estimate_charges(job, individual_charges=False):
+    """The estimate's price lines as the customer page shows them."""
+    charges = [
+        {
+            'id': c.id,
+            'name': re.sub(r'^Extra (?=(?:pickup|delivery) stop)', 'Additional ', c.name or ''),
+            'description': _customer_charge_description(c.name, c.description or ''),
+            'pending': (c.description or '').startswith('Calculation pending: '),
+            'total': float(c.total_cost or 0),
+            'subtotal': float(c.subtotal or 0),
+            'discount_amount': float(c.discount_amount or 0),
+            'discount_percent': round(float(c.discount_amount or 0) / float(c.subtotal) * 100, 2) if c.subtotal and c.subtotal > 0 else 0,
+        }
+        for c in (job.charges or [])
+        if (
+            ((c.description or '').startswith('Calculation pending: ')) or (c.total_cost and float(c.total_cost) > 0) or (c.discount_amount and float(c.discount_amount) > 0)
+        )
+    ]
+    # Keep individual charge IDs on rep pages for precise inline adjustments.
+    return charges if individual_charges else _group_box_packing_charges(charges)
+
+
+def _estimate_from(access, lead, job, charges):
+    """The saved estimate: the published price, else the job price, else the lead total."""
+    from math import ceil
+    if access.published_at and access.published_price is not None:
+        return {'price': str(access.published_price), 'cuft': str(ceil(access.published_cuft or lead.volume or 0)), 'charges': charges}
+    if job.price is not None and (float(job.price) > 0 or any(c.get('pending') for c in charges)):
+        return {'price': str(job.price), 'cuft': str(ceil(lead.volume or 0)), 'charges': charges}
+    if lead.estimated_total:
+        try:
+            final_total = float(json.loads(lead.estimated_total).get('finalTotal') or 0)
+        except Exception:
+            return None
+        if final_total > 0:
+            return {'price': str(final_total), 'cuft': str(ceil(lead.volume or 0)), 'charges': charges}
+    return None
+
+
+def saved_estimate(access, lead, job, state, individual_charges=False):
+    """The estimate as saved, with no pricing work, so the page can show it at once."""
+    spark_id = state.get('last_spark_id')
+    if not _has_inventory_list(state) or json.loads(job.customer_packing_package or '{}').get('pricing_pending'):
+        return None
+    if spark_id and (state.get('last_spark_status', 'queued') in ('queued', 'running') or state.get('spark_extracted_id') != spark_id):
+        return None
+    if state.get('spark_pricing_ready') is False:
+        return None
+    return _estimate_from(access, lead, job, estimate_charges(job, individual_charges))
 
 
 def _move_details(access, db, *, refresh_report=True, include_pricing=True, pricing_only=False, individual_charges=False):
@@ -710,51 +768,10 @@ def _move_details(access, db, *, refresh_report=True, include_pricing=True, pric
     estimate = None
     is_spark_pending = bool(spark_info and spark_info.get("status") in ("queued", "running"))
     saved_package = json.loads(job.customer_packing_package or '{}')
-    charges_list = [
-        {
-            'id': c.id,
-            'name': re.sub(r'^Extra (?=(?:pickup|delivery) stop)', 'Additional ', c.name or ''),
-            'description': _customer_charge_description(c.name, c.description or ''),
-            'pending': (c.description or '').startswith('Calculation pending: '),
-            'total': float(c.total_cost or 0),
-            'subtotal': float(c.subtotal or 0),
-            'discount_amount': float(c.discount_amount or 0),
-            'discount_percent': round(float(c.discount_amount or 0) / float(c.subtotal) * 100, 2) if c.subtotal and c.subtotal > 0 else 0,
-        }
-        for c in (job.charges or [])
-        if (
-            ((c.description or '').startswith('Calculation pending: ')) or (c.total_cost and float(c.total_cost) > 0) or (c.discount_amount and float(c.discount_amount) > 0)
-        )
-    ]
-    # Keep individual charge IDs on rep pages for precise inline adjustments.
-    if not individual_charges:
-        charges_list = _group_box_packing_charges(charges_list)
+    charges_list = estimate_charges(job, individual_charges)
     report_import_pending = bool(spark_info and conv_details.get('spark_extracted_id') != spark_info['id'])
     if not is_spark_pending and not report_import_pending and conv_details.get('spark_pricing_ready') is not False:
-        if access.published_at and access.published_price is not None:
-            estimate = {
-                'price': str(access.published_price),
-                'cuft': str(ceil(access.published_cuft or lead.volume or 0)),
-                'charges': charges_list,
-            }
-        elif job.price is not None and (float(job.price) > 0 or any(c.get('pending') for c in charges_list)):
-            estimate = {
-                'price': str(job.price),
-                'cuft': str(ceil(lead.volume or 0)),
-                'charges': charges_list,
-            }
-        elif lead.estimated_total:
-            try:
-                parsed_total = json.loads(lead.estimated_total)
-                final_total = float(parsed_total.get('finalTotal') or 0)
-                if final_total > 0:
-                    estimate = {
-                        'price': str(final_total),
-                        'cuft': str(ceil(lead.volume or 0)),
-                        'charges': charges_list,
-                    }
-            except Exception:
-                pass
+        estimate = _estimate_from(access, lead, job, charges_list)
 
     active_company = lead.company or db.query(Company).filter(Company.is_default_company.is_(True)).one_or_none()
     company_color = active_company.color if active_company and active_company.color else resolve_company_color(active_company.name if active_company else None, None)
@@ -865,6 +882,65 @@ def _customer_pricing_options(lead, job, db):
         'long_carry': customer_long_carry(lead, job, db),
         'stairs': customer_stairs(lead, job, db),
     }
+
+
+# The parts of the page's price data each answer changes, and the unanswered-question ids each part owns.
+PRICING_PARTS = {'stairs': ('stairs',), 'elevator': ('elevator',), 'long_carry': ('long_carry', 'shuttle'),
+                 'shuttle': ('shuttle', 'long_carry'), 'storage': ('storage',), 'extra_stops': ('extra_stops',)}
+UNANSWERED_SCOPE = {'stairs': ('stairs_',), 'elevator': ('elevator_',), 'long_carry': ('carry_', 'shuttle'),
+                    'shuttle': ('shuttle', 'carry_'), 'storage': ('storage',), 'extra_stops': ('stops_',),
+                    'packing_package': ('package', 'protection'), 'packing_items': ('bulky',)}
+
+
+def _pricing_delta(access, lead, job, db, kind, individual_charges):
+    """What one saved answer changed: its part of the price data, the price lines and total, and its unanswered questions."""
+    from routes.pricing import (customer_packing_options, customer_packing_package, customer_shuttle, customer_storage,
+                                customer_elevator, customer_long_carry, customer_stairs)
+    from extra_stops import option as extra_stops_option
+    from estimate_questions import unanswered_questions
+    builders = {'packing_package': customer_packing_package, 'packing_items': customer_packing_options,
+                'shuttle': customer_shuttle, 'storage': customer_storage, 'extra_stops': extra_stops_option,
+                'elevator': customer_elevator, 'long_carry': customer_long_carry, 'stairs': customer_stairs}
+    parts = PRICING_PARTS.get(kind, ('packing_package', 'packing_items'))
+    db.refresh(job)
+    db.refresh(access)
+    options = {part: builders[part](lead, job, db) for part in parts}
+    price = access.published_price if access.published_at and access.published_price is not None else job.price
+    delta = {'saved': True, 'price': str(price) if price is not None else None,
+             'charges': estimate_charges(job, individual_charges), 'options': options,
+             'unanswered': unanswered_questions(options, package_saved='mode' in json.loads(job.customer_packing_package or '{}')),
+             'unanswered_scope': sorted({prefix for part in parts for prefix in UNANSWERED_SCOPE[part]})}
+    if kind in ('inventory_boxes', 'mode'):
+        # Box counts live on the inventory rows, so the page's list changes too.
+        conversation = db.get(LeadLiveSwitch, lead.id)
+        state = json.loads(conversation.details or '{}') if conversation else {}
+        delta['combined_inventory'] = resolve_catalog_names(state.get('spark_inventory_snapshot', []), db) if state.get('last_spark_status') == 'completed' else []
+    return delta
+
+
+def _item_answer_delta(access, lead, company, db, inventory_changed, individual_charges):
+    """What one item answer changed. An answer that changes what ships also changes the list, volume and price."""
+    from inventory_questions import questions
+    from estimate_questions import unanswered_questions
+    conversation = db.get(LeadLiveSwitch, lead.id)
+    state = json.loads(conversation.details or '{}') if conversation else {}
+    item_questions = questions(company, state, db)
+    delta = {'saved': True, 'item_questions': item_questions, 'options': {},
+             'unanswered': unanswered_questions({'item_questions': item_questions}), 'unanswered_scope': ['items']}
+    if inventory_changed:
+        job = db.get(LeadJob, access.job_id)
+        db.refresh(job)
+        db.refresh(access)
+        price = access.published_price if access.published_at and access.published_price is not None else job.price
+        options = _customer_pricing_options(lead, job, db)
+        delta.update(price=str(price) if price is not None else None, charges=estimate_charges(job, individual_charges),
+                     options={key: value for key, value in options.items() if key != 'minimum_cuft'},
+                     combined_inventory=resolve_catalog_names(state.get('spark_inventory_snapshot', []), db),
+                     cuft=state.get('spark_extracted_cuft'))
+        package_saved = 'mode' in json.loads(job.customer_packing_package or '{}')
+        delta['unanswered'] = unanswered_questions({**options, 'item_questions': item_questions}, package_saved=package_saved)
+        delta['unanswered_scope'] = sorted({prefix for scope in UNANSWERED_SCOPE.values() for prefix in scope} | {'items'})
+    return delta
 
 
 def _estimate_document(access, db):
@@ -1238,7 +1314,11 @@ def save_rep_discount(body: RepDiscountInput, request: Request, access: PublicMo
     job.customer_packing_package = json.dumps(selection)
     _refresh_lead_estimated_total(lead.id, db)
     db.commit()
-    return {'saved': True}
+    # Only the price lines and total changed; send them back instead of reloading the page.
+    db.refresh(job)
+    db.refresh(access)
+    price = access.published_price if access.published_at and access.published_price is not None else job.price
+    return {'saved': True, 'price': str(price) if price is not None else None, 'charges': estimate_charges(job, individual_charges=True)}
 
 
 @router.post('/api/public-moves/{access_id}/recalculate-price')
@@ -1352,14 +1432,16 @@ class CustomerPackingPatch(BaseModel):
 
 
 @router.post('/api/public-moves/{access_id}/packing')
-def save_customer_packing(body: CustomerPackingPatch, access: PublicMoveAccess = Depends(verified), db: Session = Depends(get_db), compact: bool = False):
+def save_customer_packing(body: CustomerPackingPatch, access: PublicMoveAccess = Depends(verified), db: Session = Depends(get_db), compact: bool = False, request: Request = None):
     from models import LeadJobCharge
     from routes.pricing import customer_packing_options, customer_packing_charge_id
     from routes.leads import _refresh_lead_estimated_total
     job = db.query(LeadJob).filter_by(id=access.job_id, lead_id=access.lead_id).with_for_update().one()
     lead = db.get(Lead, access.lead_id)
     def saved_response():
-        return {'saved': True} if compact else _move_details(access, db, refresh_report=False)
+        if not compact:
+            return _move_details(access, db, refresh_report=False)
+        return _pricing_delta(access, lead, job, db, body.change.kind if body.change else None, is_rep_request(access, request))
     if body.change and body.change.kind == 'extra_stops':
         from extra_stops import option as stops_option, sync_charges
         change=body.change
@@ -2568,7 +2650,7 @@ class ItemAnswerInput(BaseModel):
 
 
 @router.post('/api/public-moves/{access_id}/item-answer')
-def save_item_answer(body: ItemAnswerInput, access: PublicMoveAccess = Depends(verified), db: Session = Depends(get_db), compact: bool = False):
+def save_item_answer(body: ItemAnswerInput, access: PublicMoveAccess = Depends(verified), db: Session = Depends(get_db), compact: bool = False, request: Request = None):
     from inventory_questions import questions
     from spark_history import remember_report
     from routes.liveswitch import apply_spark_results_to_lead
@@ -2621,10 +2703,11 @@ def save_item_answer(body: ItemAnswerInput, access: PublicMoveAccess = Depends(v
     saved.details = json.dumps(state)
     db.commit()
     if not inventory_changed:
-        from realtime import publish_customer_update
-        publish_customer_update(lead.id)
-        return {'saved': True} if compact else details(access, db)
+        # The customer page updates itself from this response; staff report views still hear about it.
+        from realtime import publish_report_update
+        publish_report_update(lead.id)
+        return _item_answer_delta(access, lead, company, db, False, is_rep_request(access, request)) if compact else details(access, db)
     result = apply_spark_results_to_lead(lead.id, state.get('last_spark_share_url', ''), db,
         expected_report_id=body.report_id, use_snapshot=True)
     if not result.get('ok'): raise HTTPException(502, result.get('detail', 'Could not update the estimate'))
-    return {'saved': True} if compact else details(access, db)
+    return _item_answer_delta(access, lead, company, db, True, is_rep_request(access, request)) if compact else details(access, db)

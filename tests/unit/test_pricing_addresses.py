@@ -109,7 +109,7 @@ def test_oregon_long_distance_selects_book_with_destination_coverage():
     from pickup_areas import select_pickup_plan
     from zip_state import delivery_location
     source = BACKEND / 'routes/pricing.py'
-    nodes = [n for n in ast.parse(source.read_text(encoding='utf-8')).body if getattr(n, 'name', '') in ('infer_job_move_type', '_plan_destination_for_delivery')]
+    nodes = [n for n in ast.parse(source.read_text(encoding='utf-8')).body if getattr(n, 'name', '') in ('infer_job_move_type', '_match_job_move_type', '_plan_destination_for_delivery')]
     for node in nodes:
         node.decorator_list = []
         node.returns = None

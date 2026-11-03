@@ -537,6 +537,13 @@ class LeadJob(Base):
     __tablename__ = "lead_jobs"
 
     id = Column(String(36), primary_key=True, default=_uuid)
+    # The pricing plan and move type this job matched, and a fingerprint of what the match used
+    # (company, addresses, the company's plans and local routes); matched again only when that changes.
+    pricing_plan_id = Column(String(36))
+    pricing_move_type = Column(String(50))
+    pricing_match_key = Column(String(64))
+    # The plan's minimum billable cu ft for this job, stored once per plan match.
+    minimum_cuft = Column(Integer)
     lead_id = Column(String(36), ForeignKey("leads.id"), nullable=False, index=True)
     company_id = Column(String(36), ForeignKey("companies.id"), nullable=True, index=True)
     dispatch_company_id = Column(String(36), ForeignKey("companies.id"), nullable=True, index=True)

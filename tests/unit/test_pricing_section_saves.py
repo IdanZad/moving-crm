@@ -30,7 +30,8 @@ class SectionSaveTests(unittest.TestCase):
         handler.decorator_list = []
         handler.args.defaults = []
         future = ast.parse('from __future__ import annotations').body[0]
-        self.scope = {'_plan_or_404': lambda *args: self.plan, 'HTTPException': HttpError, 'json': json,
+        from datetime import datetime, timezone
+        self.scope = {'_plan_or_404': lambda *args: self.plan, 'HTTPException': HttpError, 'json': json, 'datetime': datetime, 'timezone': timezone,
                       'PricingService': Row, 'PricingRate': Row, 'PricingRule': Row}
         for key in ['EXTRA_STOPS', 'ELEVATOR', 'LONG_CARRY', 'STAIRS', 'STORAGE', 'ORIGIN_FEE', 'DELIVERY_FEE', 'SHUTTLE', 'PACKING_CARD']:
             self.scope[key + '_PREFIX'] = key + ':'

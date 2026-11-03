@@ -27,11 +27,23 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { readCustomerBootstrap } from './customerBootstrap';
 import { useParams } from "react-router-dom";
 import { API_BASE } from "./apiConfig";
-import RepDiscounts from './RepDiscounts';
+import RepDiscounts, { type DiscountResult } from './RepDiscounts';
 import "./CustomerMovePage.css";
 
 type LinkSms = { sent_at: string; phone_last4: string };
 type Shuttle = { automatic: boolean; answer: boolean | null; revision: string; required: boolean; question: string; rate: number; total: number; cubic_feet: number; inventory_cubic_feet: number; minimum_cubic_feet: number };
+// What saving one answer returns: only the data that answer changed.
+type PricingDelta = {
+  price?: string | null;
+  charges?: NonNullable<NonNullable<Details['estimate']>['charges']>;
+  options: Partial<Details>;
+  unanswered: string[];
+  unanswered_scope: string[];
+  combined_inventory?: Details['combined_inventory'];
+  // Item answers also return the questions, and the volume when what ships changed.
+  item_questions?: Details['item_questions'];
+  cuft?: number | null;
+};
 type Details = {
   extra_stops?: ExtraStopsOption | null;
   elevator?: ElevatorOption | null;
@@ -88,7 +100,8 @@ function CompletionIcon({complete, label}: {complete: boolean; label: string}) {
   return <svg className={`cm-completion-icon ${complete ? 'is-complete' : 'needs-attention'}`} width="20" height="20" viewBox="0 0 24 24" role="img" aria-label={label}><title>{label}</title><circle cx="12" cy="12" r="11" fill="currentColor"/>{complete ? <path d="m7 12 3 3 7-7" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/> : <><path d="M12 6v7" stroke="white" strokeWidth="2" strokeLinecap="round"/><circle cx="12" cy="17" r="1.2" fill="white"/></>}</svg>;
 }
 const emptyDetails = (): Details => ({name:'', phone:'', email:'', move_date:'', pickup:'', delivery:'', company:'', stops:[], estimate:null, packing_package:null, packing_items:[], packing_saved:false, walkthrough:null, participant_url:'', files:[]});
-const pageSections = ['move', 'inventory', 'media', 'volume', 'pricing'] as const;
+// 'estimate' is the saved price alone, so it shows before the pricing section's work finishes.
+const pageSections = ['move', 'inventory', 'media', 'volume', 'estimate', 'pricing'] as const;
 type PageSection = typeof pageSections[number];
 type SectionState = { loading: boolean; error: string; ready: boolean };
 const initialSections = () => Object.fromEntries(pageSections.map(key => [key, {loading:true, error:'', ready:false}])) as Record<PageSection, SectionState>;
@@ -245,9 +258,7 @@ export default function CustomerMovePage() {
   }
   type PricingChange = { kind: 'additional_protection' | 'material' | 'inventory_boxes' | 'extra_stops' | 'elevator' | 'long_carry' | 'stairs' | 'storage' | 'mode' | 'unpacking' | 'box' | 'bulky' | 'shuttle'; material_item?:import('./CustomerPackingOptions').AdditionalMaterialItem|null; box_quantities?:Record<string,number>; stop_change?:import('./CustomerExtraStopsQuestion').ExtraStopChange; stops?: string[]; has_stops?: boolean; revision?: string; location?: 'pickup' | 'delivery'; flights?: number; carry_feet?: number; access_unknown?: boolean; carry_unknown?: boolean; carry_acknowledged?: boolean; elevator?: boolean; materials?: boolean; available_date?: string; item_id?: string; mode?: 'full' | 'partial' | 'none'; enabled?: boolean; service?: 'packing' | 'crating' | null };
   const failedPricing = useRef(new Map<string, PricingChange>());
-  const pricingFullRefresh = useRef(false);
   function savePricingChange(change: PricingChange) {
-    if (['extra_stops', 'inventory_boxes', 'mode'].includes(change.kind)) pricingFullRefresh.current = true;
     // Box counts are saved on the inventory rows; reload the inventory window the next time it opens.
     if (['inventory_boxes', 'mode'].includes(change.kind)) setInventoryOpened(false);
     const id = `pricing:${change.kind}:${change.location || change.item_id || ''}:${change.stop_change?.previous || change.stop_change?.address || ''}`;
@@ -264,7 +275,7 @@ export default function CustomerMovePage() {
           const saved=data?.extra_stops?.locations.find(group=>group.location===change.location)?.stops.find(stop=>stop.address===address);
           payload={...change,route_origin:origin,stop_change:{...change.stop_change,meters:saved?.meters??await browserDrivingMeters(data?.google_maps_browser_key||'',origin,address)}};
         }
-        await call('/packing?compact=true', { change: payload });
+        applyPricingDelta(await call('/packing?compact=true', { change: payload }));
         failedPricing.current.delete(id);
         failedAnswers.current.delete(id);
         setPackingError(failedPricing.current.size ? 'Some choices could not be saved. Please retry.' : '');
@@ -274,15 +285,25 @@ export default function CustomerMovePage() {
         setPackingError((error as Error).message);
       } finally {
         answerPending.current -= 1;
-        if (!answerPending.current) {
-          setAnswersSaving(false);
-          const pricingOnly = !pricingFullRefresh.current;
-          pricingFullRefresh.current = false;
-          void refreshDetails(true, pricingOnly);
-        }
+        if (!answerPending.current) setAnswersSaving(false);
       }
     });
     answerQueue.current = task.catch(() => {});
+  }
+  // A saved answer returns only what it changed: its part of the price data, the price lines and total,
+  // and its unanswered questions. Merge those in; nothing reloads.
+  function applyPricingDelta(result: PricingDelta) {
+    setData(previous => {
+      if (!previous) return previous;
+      const kept = (previous.unanswered_questions || []).filter(id => !result.unanswered_scope.some(prefix => id.startsWith(prefix)));
+      return {...previous, ...result.options,
+        ...(result.combined_inventory ? {combined_inventory: result.combined_inventory} : {}),
+        unanswered_questions: [...new Set([...kept, ...result.unanswered])],
+        ...(result.item_questions && answerPending.current <= 1 ? {item_questions: result.item_questions} : {}),
+        ...(result.cuft != null && previous.spark ? {spark: {...previous.spark, cuft: result.cuft}} : {}),
+        estimate: previous.estimate && result.charges ? {...previous.estimate, price: result.price ?? previous.estimate.price, charges: result.charges} : previous.estimate,
+        ...(previous.signature_status === 'signed' ? {signature_status: 'changed' as const, signature_requires_resign: true} : {})};
+    });
   }
   async function saveStoragePickup(date: string) {
     answerPending.current += 1;
@@ -808,6 +829,12 @@ export default function CustomerMovePage() {
       if (current()) setSections(previous => ({...previous, [section]: {...previous[section], loading:false, error:(error as Error).message}}));
     }
   }
+  // A discount changes only the price lines and total; a signed estimate now needs signing again.
+  function applyDiscount(result: DiscountResult) {
+    setData(previous => previous?.estimate ? {...previous,
+      estimate: {...previous.estimate, price: result.price ?? previous.estimate.price, charges: result.charges},
+      ...(previous.signature_status === 'signed' ? {signature_status: 'changed' as const, signature_requires_resign: true} : {})} : previous);
+  }
   async function refreshDetails(background = false, retryPricing = false, initial = false) {
     if (!session || !customerSessionActive(session) || (background && answerPending.current)) return;
     if (retryPricing) { await loadSection('pricing', background); return; }
@@ -1286,7 +1313,7 @@ export default function CustomerMovePage() {
                             <div className="cm-line-price">
                               {(child.discount_amount || 0) > 0 && <del>{money(child.subtotal || 0)}</del>}
                               <strong>{child.pending ? 'Pending' : money(child.total)}</strong>
-                              {repPage && child.id && !child.pending && <RepDiscounts base={base} headers={headers} onSaved={refreshDetails} chargeId={child.id} chargeName={child.displayName || child.name} />}
+                              {repPage && child.id && !child.pending && <RepDiscounts base={base} headers={headers} onSaved={applyDiscount} chargeId={child.id} chargeName={child.displayName || child.name} />}
                             </div>
                             </div>
                           </div>)}
@@ -1294,7 +1321,7 @@ export default function CustomerMovePage() {
                         <div className="cm-line-price">
                           {!charge.children && (charge.discount_amount || 0) > 0 && <del>{money(charge.subtotal || 0)}</del>}
                           {charge.pending && !charge.children ? 'Pending' : new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(charge.total)}{charge.children && charge.pending && <small> + pending</small>}
-                          {repPage && charge.id && !charge.children && !charge.pending && <RepDiscounts base={base} headers={headers} onSaved={refreshDetails} chargeId={charge.id} chargeName={charge.name} />}
+                          {repPage && charge.id && !charge.children && !charge.pending && <RepDiscounts base={base} headers={headers} onSaved={applyDiscount} chargeId={charge.id} chargeName={charge.name} />}
                         </div>
                       </div>
                     );})}
@@ -1328,8 +1355,8 @@ export default function CustomerMovePage() {
             }} submitActions={async (requestId, edits, revision, reportId) => {
               const result = await call('/inventory/actions', {request_id:requestId, revision, report_id:reportId, ...edits}, 'PATCH');
               setCalculationError(''); setReportState('idle');
+              // Saving the list does not reprice; the estimate is only marked as needing an update.
               setData(previous => previous ? {...previous, estimate_needs_update: true, signature_status: undefined} : previous);
-              void refreshDetails(true, true);
               return result;
             }} onDone={async () => {
               await answerQueue.current;
@@ -1337,9 +1364,10 @@ export default function CustomerMovePage() {
                 throw new Error('Your list is saved. Please retry saving your service answers before calculating the price.');
               }
               await call(data.spark?.status === 'completed' ? '/recalculate-price' : '/generate-inventory-report', {});
-              await refreshDetails();
+              // Done changes the list, volume and price; the rest of the page is unchanged.
+              await Promise.allSettled([loadSection('inventory', true), loadSection('volume', true), loadSection('pricing', true)]);
               setCalculationError('');
-            }} onClose={changed => { setShowInventoryList(false); if (changed) void refreshDetails(); }} />}
+            }} onClose={changed => { setShowInventoryList(false); if (changed) void loadSection('inventory', true); }} />}
             {inventoryPdf && <InventoryViewer url={inventoryPdf.url} filename={inventoryPdf.filename} onClose={() => { URL.revokeObjectURL(inventoryPdf.url); setInventoryPdf(null); }} />}
             {showQuestions && (
               <div className="cm-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="packing-title" onClick={event => { if (event.target === event.currentTarget) setShowQuestions(false); }}>
@@ -1401,11 +1429,11 @@ export default function CustomerMovePage() {
                       setData(current=>current?{...current,item_questions:current.item_questions?.map(question=>question.id===answer.question_id?{...question,saved:{answer_id:answer.answer_id,acknowledged:answer.acknowledged,pending:answer.pending,selected_items:answer.selected_items}}:question)}:current);
                       const task = answerQueue.current.then(async () => {
                         try {
-                          await call('/item-answer?compact=true', { ...answer, report_id: reportId });
+                          applyPricingDelta(await call('/item-answer?compact=true', { ...answer, report_id: reportId }));
                           failedAnswers.current.delete(answer.question_id); setTermsError('');
                         }
                         catch (error) { failedAnswers.current.add(answer.question_id); setTermsError('Please retry the answer that could not be saved.'); throw error; }
-                        finally { answerPending.current -= 1; if (!answerPending.current) { setAnswersSaving(false); void refreshDetails(true); } }
+                        finally { answerPending.current -= 1; if (!answerPending.current) setAnswersSaving(false); }
                       });
                       answerQueue.current = task.catch(() => {});
                       return task;

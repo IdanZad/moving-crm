@@ -54,7 +54,8 @@ def test_real_pricing_save_keeps_service_and_client_data():
     from delivery_fees import ORIGIN_FEE_PREFIX, DELIVERY_FEE_PREFIX, DeliveryFeeCard, save_fee_card
     from bulky_items import is_bulky_row, save_bulky_items
     from long_distance_packing import PACKING_CARD_PREFIX, PackingCard, save_packing_card
-    scope.update(PlanUpdate=Row,Session=Session,Depends=Depends,require_admin=lambda:None,get_db=lambda:None,HTTPException=HTTPException,json=json,
+    from datetime import datetime, timezone
+    scope.update(datetime=datetime,timezone=timezone,PlanUpdate=Row,Session=Session,Depends=Depends,require_admin=lambda:None,get_db=lambda:None,HTTPException=HTTPException,json=json,
                  set_pickup_areas=set_pickup_areas,EXTRA_STOPS_PREFIX=EXTRA_STOPS_PREFIX,ExtraStopsCard=ExtraStopsCard,save_stops_card=save_stops_card,
                  ELEVATOR_PREFIX=ELEVATOR_PREFIX,ElevatorCard=ElevatorCard,save_elevator_card=save_elevator_card,
                  LONG_CARRY_PREFIX=LONG_CARRY_PREFIX,LongCarryCard=LongCarryCard,save_long_carry_card=save_long_carry_card,

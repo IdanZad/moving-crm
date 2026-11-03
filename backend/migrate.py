@@ -141,6 +141,9 @@ def migrate() -> None:
         connection.execute(text('ALTER TABLE inventory_edit_items ADD COLUMN IF NOT EXISTS set_id VARCHAR(36)'))
         connection.execute(text('ALTER TABLE inventory_edit_items ADD COLUMN IF NOT EXISTS set_name VARCHAR(200)'))
         connection.execute(text('ALTER TABLE inventory_edit_items ADD COLUMN IF NOT EXISTS mover_pack_count INTEGER'))
+        for column, kind in (('pricing_plan_id', 'VARCHAR(36)'), ('pricing_move_type', 'VARCHAR(50)'), ('pricing_match_key', 'VARCHAR(64)'),
+                             ('minimum_cuft', 'INTEGER')):
+            connection.execute(text(f'ALTER TABLE lead_jobs ADD COLUMN IF NOT EXISTS {column} {kind}'))
         from followup_tasks import install as install_followup_tasks
         install_followup_tasks(connection)
         from smartmoving_task_migration import install as install_smartmoving_tasks
