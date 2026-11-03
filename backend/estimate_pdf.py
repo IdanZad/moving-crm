@@ -5,6 +5,7 @@ from decimal import Decimal
 from io import BytesIO
 from math import ceil
 import json
+import re
 from xml.sax.saxutils import escape
 
 from reportlab.lib import colors
@@ -232,6 +233,9 @@ def _summary(data, styles, p, table):
         if _is_service(charge) or (not charge.get('pending') and not charge.get('total')):
             continue
         basis = charge.get('description') or 'Not specified'
+        rate = re.fullmatch(r'\$([\d,]+\.\d{2}) per cu ft(.*)', basis) if charge.get('name') == 'Transportation charge' else None
+        if rate:
+            basis = f"{float(estimate.get('cuft') or 0):,.2f} cuft @ ${rate[1]} per cuft{rate[2]}"
         if charge.get('discount_amount', 0) > 0:
             basis += f"\nBefore discount: {money(charge['subtotal'])}\nDiscount ({charge['discount_percent']:g}%): -{money(charge['discount_amount'])}"
         charges.append([p(charge['name']), p(basis, 'NoteEstimate'), p('Pending' if charge.get('pending') else money(charge['total']), 'RightEstimate')])
