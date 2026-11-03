@@ -2373,10 +2373,10 @@ export default function LeadDetail() {
                     <label>Name<input autoFocus value={editName} onChange={(e) => setEditName(e.target.value)} placeholder="Full name" /></label>
                     <label>Phone<input value={editPhone} onChange={(e) => setEditPhone(e.target.value)} placeholder="Phone number" /></label>
                     {contactInputs("phone")}
-                    <button className="slds-button lead-header-add-contact" type="button" onClick={() => setEditContacts((rows) => [...rows, { kind: "phone", value: "" }])}>+ Add phone</button>
+                    <button className="lead-header-add-contact" type="button" onClick={() => setEditContacts((rows) => [...rows, { kind: "phone", value: "" }])}>+ Add phone</button>
                     <label>Email<input value={editEmail} onChange={(e) => setEditEmail(e.target.value)} placeholder="Email address" /></label>
                     {contactInputs("email")}
-                    <button className="slds-button lead-header-add-contact" type="button" onClick={() => setEditContacts((rows) => [...rows, { kind: "email", value: "" }])}>+ Add email</button>
+                    <button className="lead-header-add-contact" type="button" onClick={() => setEditContacts((rows) => [...rows, { kind: "email", value: "" }])}>+ Add email</button>
                     <div className="lead-header-edit-buttons">
                       <button className="slds-button" type="button" onClick={() => setEditingUser(false)} disabled={savingUser}>Cancel</button>
                       <button className="slds-button lead-header-save" type="submit" disabled={savingUser}>{savingUser ? "Saving…" : "Save"}</button>
@@ -2394,8 +2394,8 @@ export default function LeadDetail() {
                     </div>
                     {extras.filter((row) => row.kind === "phone").map((row) => (
                       <div key={row.id} className="lead-header-contact-line lead-header-extra">
-                        <a href={`tel:${row.value}`}>{row.value}</a>
-                        {canEditLead ? <button className="slds-button lead-header-make-main" type="button" disabled={savingUser} onClick={() => makeMain(row)}>Make main</button> : null}
+                        <a href={`tel:${row.value}`} title={row.value}>{row.value}</a>
+                        {canEditLead ? <button className="lead-header-make-main" type="button" disabled={savingUser} onClick={() => makeMain(row)}>Make main</button> : null}
                       </div>
                     ))}
                     <div className="lead-header-contact-line">
@@ -2404,8 +2404,8 @@ export default function LeadDetail() {
                     </div>
                     {extras.filter((row) => row.kind === "email").map((row) => (
                       <div key={row.id} className="lead-header-contact-line lead-header-extra">
-                        <a href={`mailto:${row.value}`}>{row.value}</a>
-                        {canEditLead ? <button className="slds-button lead-header-make-main" type="button" disabled={savingUser} onClick={() => makeMain(row)}>Make main</button> : null}
+                        <a href={`mailto:${row.value}`} title={row.value}>{row.value}</a>
+                        {canEditLead ? <button className="lead-header-make-main" type="button" disabled={savingUser} onClick={() => makeMain(row)}>Make main</button> : null}
                       </div>
                     ))}
                   </>

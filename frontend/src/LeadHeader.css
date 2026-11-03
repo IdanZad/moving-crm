@@ -95,18 +95,43 @@
   font-weight: 400;
 }
 
-/* Extra phones and emails, lined up with the main ones (past their 14px icon). */
+/* Extra phones and emails, lined up under the main ones (past their 14px icon), one line each. */
 .lead-header-extra {
   padding-left: 21px;
 }
 
-.lead-header-make-main,
+.lead-header-extra a {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* Shown on the line being pointed at or focused, so the list itself stays plain. */
+.lead-header-make-main {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 0;
+  border: none;
+  background: none;
+  color: #0176d3;
+  font-size: 11px;
+  line-height: 1.2;
+  cursor: pointer;
+  visibility: hidden;
+}
+
+.lead-header-extra:hover .lead-header-make-main,
+.lead-header-make-main:focus-visible {
+  visibility: visible;
+}
+
 .lead-header-add-contact {
   padding: 0;
   border: none;
   background: none;
   color: #0176d3;
   font-size: 11px;
+  line-height: 1.2;
   cursor: pointer;
 }
 
