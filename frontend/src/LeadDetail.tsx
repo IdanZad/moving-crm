@@ -352,6 +352,8 @@ export default function LeadDetail() {
   const [editName, setEditName] = useState("");
   const [editPhone, setEditPhone] = useState("");
   const [editEmail, setEditEmail] = useState("");
+  // Extra phones and emails beside the main ones, edited with them.
+  const [editContacts, setEditContacts] = useState<{ kind: "phone" | "email"; value: string }[]>([]);
   const [editMoveSize, setEditMoveSize] = useState("");
   const [editingMoveSize, setEditingMoveSize] = useState(false);
   const [savingUser, setSavingUser] = useState(false);
@@ -2110,6 +2112,7 @@ export default function LeadDetail() {
         const name = String(lead.full_name || "").trim();
         const phone = String(lead.phone_number || "").trim();
         const email = String(lead.email || "").trim();
+        const extras = (Array.isArray(lead.contacts) ? lead.contacts : []) as { id: string; kind: "phone" | "email"; value: string }[];
         const moveSize = String(lead.move_size || "").trim();
         const volumeRaw = lead.volume;
         const weightRaw = lead.weight;
@@ -2129,7 +2132,28 @@ export default function LeadDetail() {
           setEditName(name);
           setEditPhone(phone);
           setEditEmail(email);
+          setEditContacts(extras.map(({ kind, value }) => ({ kind, value })));
           setEditingUser(true);
+        }
+
+        // One save: the extra becomes the main one, and the old main one joins the extras.
+        function makeMain(extra: { id: string; kind: "phone" | "email"; value: string }) {
+          const current = extra.kind === "phone" ? phone : email;
+          const contacts = [
+            ...extras.filter((row) => row.id !== extra.id).map(({ kind, value }) => ({ kind, value })),
+            ...(current ? [{ kind: extra.kind, value: current }] : []),
+          ];
+          void saveLeadFields({ [extra.kind === "phone" ? "phone_number" : "email"]: extra.value, contacts }, () => undefined);
+        }
+
+        function contactInputs(kind: "phone" | "email") {
+          return editContacts.map((row, index) => row.kind !== kind ? null : (
+            <div key={index} className="lead-header-extra-input">
+              <input value={row.value} placeholder={kind === "phone" ? "Another phone" : "Another email"} aria-label={kind === "phone" ? "Another phone" : "Another email"}
+                onChange={(e) => setEditContacts((rows) => rows.map((item, i) => i === index ? { ...item, value: e.target.value } : item))} />
+              <button className="slds-button" type="button" onClick={() => setEditContacts((rows) => rows.filter((_, i) => i !== index))}>Remove</button>
+            </div>
+          ));
         }
 
         function startEditMoveSize() {
@@ -2137,7 +2161,7 @@ export default function LeadDetail() {
           setEditingMoveSize(true);
         }
 
-        async function saveLeadFields(fields: Record<string, string>, done: () => void) {
+        async function saveLeadFields(fields: Record<string, unknown>, done: () => void) {
           if (!canEditLead) return;
           setSavingUser(true);
           try {
@@ -2342,12 +2366,17 @@ export default function LeadDetail() {
                     className="lead-header-edit"
                     onSubmit={(event) => {
                       event.preventDefault();
-                      void saveLeadFields({ full_name: editName, phone_number: editPhone, email: editEmail }, () => setEditingUser(false));
+                      void saveLeadFields({ full_name: editName, phone_number: editPhone, email: editEmail,
+                        contacts: editContacts.filter((row) => row.value.trim()) }, () => setEditingUser(false));
                     }}
                   >
                     <label>Name<input autoFocus value={editName} onChange={(e) => setEditName(e.target.value)} placeholder="Full name" /></label>
                     <label>Phone<input value={editPhone} onChange={(e) => setEditPhone(e.target.value)} placeholder="Phone number" /></label>
+                    {contactInputs("phone")}
+                    <button className="slds-button lead-header-add-contact" type="button" onClick={() => setEditContacts((rows) => [...rows, { kind: "phone", value: "" }])}>+ Add phone</button>
                     <label>Email<input value={editEmail} onChange={(e) => setEditEmail(e.target.value)} placeholder="Email address" /></label>
+                    {contactInputs("email")}
+                    <button className="slds-button lead-header-add-contact" type="button" onClick={() => setEditContacts((rows) => [...rows, { kind: "email", value: "" }])}>+ Add email</button>
                     <div className="lead-header-edit-buttons">
                       <button className="slds-button" type="button" onClick={() => setEditingUser(false)} disabled={savingUser}>Cancel</button>
                       <button className="slds-button lead-header-save" type="submit" disabled={savingUser}>{savingUser ? "Saving…" : "Save"}</button>
@@ -2363,10 +2392,22 @@ export default function LeadDetail() {
                       <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1.9.4 1.8.7 2.7a2 2 0 0 1-.5 2.1L8 9.8a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.7.7a2 2 0 0 1 1.7 2z" /></svg>
                       {phone ? <a href={`tel:${phone}`}>{phone}</a> : <span className="lead-header-empty">No phone</span>}
                     </div>
+                    {extras.filter((row) => row.kind === "phone").map((row) => (
+                      <div key={row.id} className="lead-header-contact-line lead-header-extra">
+                        <a href={`tel:${row.value}`}>{row.value}</a>
+                        {canEditLead ? <button className="slds-button lead-header-make-main" type="button" disabled={savingUser} onClick={() => makeMain(row)}>Make main</button> : null}
+                      </div>
+                    ))}
                     <div className="lead-header-contact-line">
                       <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="4" width="20" height="16" rx="2" /><path d="m22 7-10 6L2 7" /></svg>
                       {email ? <a href={`mailto:${email}`}>{email}</a> : <span className="lead-header-empty">No email</span>}
                     </div>
+                    {extras.filter((row) => row.kind === "email").map((row) => (
+                      <div key={row.id} className="lead-header-contact-line lead-header-extra">
+                        <a href={`mailto:${row.value}`}>{row.value}</a>
+                        {canEditLead ? <button className="slds-button lead-header-make-main" type="button" disabled={savingUser} onClick={() => makeMain(row)}>Make main</button> : null}
+                      </div>
+                    ))}
                   </>
                 )}
               </div>

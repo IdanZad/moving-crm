@@ -243,9 +243,10 @@ def _summary(data, styles, p, table, link=True):
         basis = charge.get('description') or 'Not specified'
         rate = re.fullmatch(r'\$([\d,]+\.\d{2}) per cu ft(?: \(minimum charge \$([\d,]+\.\d{2})\))?', basis) if charge.get('name') == 'Transportation charge' else None
         if rate and rate[2]:
-            # The minimum charge covers every volume it is higher than: up to minimum / rate cu ft.
-            per_cuft, minimum_charge = float(rate[1].replace(',', '')), float(rate[2].replace(',', ''))
-            basis = f"Up to {int(minimum_charge // per_cuft)} cu ft: ${rate[2]} | Each additional cu ft: ${rate[1]}"
+            # The plan's two minimums: its minimum volume and its minimum charge.
+            minimum_cuft = estimate.get('minimum_cuft') or minimum
+            basis = (f"Up to {float(minimum_cuft):g} cu ft: ${rate[2]} | Each additional cu ft: ${rate[1]}" if minimum_cuft
+                     else f"Minimum charge: ${rate[2]} | Each cu ft: ${rate[1]}")
         elif rate:
             basis = f"{float(estimate.get('cuft') or 0):,.2f} cuft @ ${rate[1]} per cuft"
         if charge.get('discount_amount', 0) > 0:

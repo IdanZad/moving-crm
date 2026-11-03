@@ -95,6 +95,40 @@
   font-weight: 400;
 }
 
+/* Extra phones and emails, lined up with the main ones (past their 14px icon). */
+.lead-header-extra {
+  padding-left: 21px;
+}
+
+.lead-header-make-main,
+.lead-header-add-contact {
+  padding: 0;
+  border: none;
+  background: none;
+  color: #0176d3;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.lead-header-add-contact {
+  justify-self: start;
+}
+
+.lead-header-extra-input {
+  display: flex;
+  gap: 6px;
+}
+
+.lead-header-extra-input button {
+  flex: 0 0 auto;
+  padding: 0 8px;
+  border: 1px solid #c7d5e3;
+  border-radius: 6px;
+  background: #fff;
+  color: #0176d3;
+  font-size: 12px;
+}
+
 .lead-header-move {
   display: grid;
   align-content: start;

@@ -1,5 +1,6 @@
 import uuid
 import json
+import re
 from datetime import datetime
 
 from sqlalchemy import Column, String, Text, DateTime, Date, ForeignKey, ForeignKeyConstraint, Integer, BigInteger, Boolean, UniqueConstraint, LargeBinary, Numeric, Index, text
@@ -308,6 +309,8 @@ class Lead(Base):
 
     company = relationship("Company", back_populates="leads")
     assignee = relationship("User", foreign_keys=[assigned_to])
+    # Extra phones and emails; phone and email above stay the main ones (texts, calls, SmartMoving).
+    contacts = relationship("LeadContact", order_by="LeadContact.sort_order", cascade="all, delete-orphan", passive_deletes=True)
 
     def to_dict(self):
         estimated_total_data = None
@@ -614,6 +617,29 @@ class LeadJob(Base):
             "created_at": self.created_at.isoformat() if self.created_at else "",
             "updated_at": self.updated_at.isoformat() if self.updated_at else "",
         }
+
+
+def contact_key(kind, value):
+    """How a phone or email is matched: a phone by its last 10 digits, an email trimmed and in lowercase."""
+    if kind == 'phone':
+        return re.sub(r'\D', '', value or '')[-10:]
+    return (value or '').strip().lower()
+
+
+class LeadContact(Base):
+    """An extra phone or email of a lead. Calls, texts, search and the duplicate check match it like the main one."""
+    __tablename__ = "lead_contacts"
+    __table_args__ = (UniqueConstraint("lead_id", "kind", "normalized", name="uq_lead_contacts_value"),)
+
+    id = Column(String(36), primary_key=True, default=_uuid)
+    lead_id = Column(String(36), ForeignKey("leads.id", ondelete="CASCADE"), nullable=False, index=True)
+    kind = Column(String(10), nullable=False)  # 'phone' or 'email'
+    value = Column(String(255), nullable=False)
+    normalized = Column(String(255), nullable=False, index=True)  # contact_key(kind, value)
+    sort_order = Column(Integer, nullable=False, default=0)
+
+    def to_dict(self):
+        return {"id": self.id, "kind": self.kind, "value": self.value}
 
 
 class LeadJobCharge(Base):
