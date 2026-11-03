@@ -146,7 +146,8 @@ def migrate() -> None:
         connection.execute(text("""UPDATE lead_liveswitch SET details = (details::jsonb - 'inventory_draft')::text
                                    WHERE details LIKE '%"inventory_draft"%'"""))
         for column, kind in (('pricing_plan_id', 'VARCHAR(36)'), ('pricing_move_type', 'VARCHAR(50)'), ('pricing_match_key', 'VARCHAR(64)'),
-                             ('minimum_cuft', 'INTEGER'), ('pricing_options_cache', 'TEXT'), ('pricing_options_key', 'VARCHAR(64)')):
+                             ('minimum_cuft', 'INTEGER'), ('pricing_options_cache', 'TEXT'), ('pricing_options_key', 'VARCHAR(64)'),
+                             ('estimate_approved_id', 'VARCHAR(36)'), ('estimate_approved_at', 'TIMESTAMP')):
             connection.execute(text(f'ALTER TABLE lead_jobs ADD COLUMN IF NOT EXISTS {column} {kind}'))
         from followup_tasks import install as install_followup_tasks
         install_followup_tasks(connection)

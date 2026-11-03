@@ -1055,6 +1055,10 @@ def prepare_estimate_signature(access: PublicMoveAccess = Depends(verified), db:
     from fastapi.encoders import jsonable_encoder
     from models import EstimateSignature
     from estimate_pdf import build_estimate_pdf
+    job = db.get(LeadJob, access.job_id)
+    if job.estimate_approved_id:
+        # The copy the rep approved, exactly as saved: nothing is built.
+        return {'id': job.estimate_approved_id, 'signed': False, 'approved': True}
     # A new, unsigned estimate from what is saved, as the page shows it: nothing is recalculated or compared.
     # A signed estimate is opened from its saved copy instead (estimate-signatures/{id}/pdf).
     data, rows = _estimate_document(access, db)
@@ -1067,7 +1071,27 @@ def prepare_estimate_signature(access: PublicMoveAccess = Depends(verified), db:
         report_id=(data.get('spark') or {}).get('id'),
         snapshot=json.dumps(jsonable_encoder({'data': data, 'rows': rows})), pdf=build_estimate_pdf(data, rows)))
     db.commit()
-    return {'id': record_id, 'signed': False}
+    return {'id': record_id, 'signed': False, 'approved': False}
+
+
+@router.post('/api/public-moves/{access_id}/estimate-signatures/{signature_id}/approve')
+def approve_estimate(signature_id: str, access: PublicMoveAccess = Depends(verified), db: Session = Depends(get_db), request: Request = None):
+    """A rep approves this saved estimate copy for signing. The customer then opens and signs exactly this copy;
+    any saved change to the estimate clears the approval."""
+    if not is_rep_request(access, request):
+        raise HTTPException(403, 'Only your moving team can approve an estimate.')
+    from estimate_signature_history import estimate_state
+    record = _signature_record(signature_id, access, db)
+    if record.signed_at:
+        raise HTTPException(409, 'This estimate is already signed.')
+    snapshot = json.loads(record.snapshot)
+    current_data, current_rows = _estimate_document(access, db)
+    if estimate_state(current_data, current_rows) != estimate_state(snapshot['data'], snapshot['rows']):
+        raise HTTPException(409, 'The estimate changed while you were reviewing it. Close this viewer and open the current estimate to approve it.')
+    job = db.get(LeadJob, access.job_id)
+    job.estimate_approved_id, job.estimate_approved_at = record.id, datetime.utcnow()
+    db.commit()
+    return {'approved': True}
 
 
 @router.get('/api/public-moves/{access_id}/estimate-signatures/{signature_id}/pdf')
@@ -1092,6 +1116,8 @@ def sign_estimate(signature_id: str, body: EstimateSigningInput, access: PublicM
     current_data, current_rows = _estimate_document(access, db)
     if current_data.get('estimate_needs_update') or estimate_state(current_data, current_rows) != estimate_state(snapshot['data'], snapshot['rows']):
         raise HTTPException(409, 'The estimate changed while you were reviewing it. Close this viewer and open the current estimate to review and sign.')
+    if db.get(LeadJob, access.job_id).estimate_approved_id != record.id:
+        raise HTTPException(409, 'Your moving team needs to approve this estimate before you can sign it.')
     signed_at = datetime.utcnow()
     signature = {'name': name, 'signed_at': signed_at.isoformat() + 'Z', 'strokes': body.strokes, 'estimate_id': record.id}
     snapshot['data']['signature'] = signature

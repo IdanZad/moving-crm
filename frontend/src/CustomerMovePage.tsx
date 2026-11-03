@@ -576,6 +576,7 @@ export default function CustomerMovePage() {
   }
   const [preparedEstimate, setPreparedEstimate] = useState('');
   const [preparedSigned, setPreparedSigned] = useState(false);
+  const [preparedApproved, setPreparedApproved] = useState(false);
   const [estimateViewerOpen, setEstimateViewerOpen] = useState(false);
   const [inventoryPdf, setInventoryPdf] = useState<{ url: string; filename: string } | null>(null);
   const [estimatePdfUrl, setEstimatePdfUrl] = useState('');
@@ -595,6 +596,7 @@ export default function CustomerMovePage() {
     setPdfBusy(true);
     setPreparedEstimate('');
     setPreparedSigned(false);
+    setPreparedApproved(false);
     try {
       // Signed: open the signed copy as saved. Otherwise a new estimate from what the page shows.
       const prepared = data?.signature_status === 'signed'
@@ -611,6 +613,7 @@ export default function CustomerMovePage() {
       setEstimatePdfUrl(url);
       setPreparedEstimate(prepared.id);
       setPreparedSigned(prepared.signed === true);
+      setPreparedApproved(prepared.signed === true || prepared.approved === true);
     } catch (error) {
       const failure = error as Error & {detail?: {unanswered_questions?: string[]}};
       const message = failure.message || 'Could not prepare the estimate. Please try again.';
@@ -1113,7 +1116,8 @@ export default function CustomerMovePage() {
                   </div>
                 </div>}
 
-                {((data.editable_files || data.files).length > 0 || !!data.combined_inventory?.length) && (
+                {/* A report runs on media; a list alone is priced when the inventory's Done is clicked. */}
+                {(data.editable_files || data.files).length > 0 && (
                   <div className="cm-spark-box">
                     <p className="cm-report-includes"><strong>Next report:</strong> {(data.editable_files || data.files).length} media file{(data.editable_files || data.files).length === 1 ? '' : 's'}{data.combined_inventory?.length ? ' + current inventory list' : ''}</p>
                     <button
@@ -1338,7 +1342,7 @@ export default function CustomerMovePage() {
 
               {!estimateViewerOpen && pageSections.every(section => sections[section].ready) && <EstimateSigning key={accessId} base={base} headers={headers} customerName={data.name || ''} version="" onClose={() => {}} reportIds={(data.report_history || []).map(report => report.id)}
                 disabled={!data.estimate || data.spark?.status !== 'completed' || pdfBusy || answersSaving || calculatingPrice || busy || pricingLoading || !!pricingLoadError} />}
-              {estimateViewerOpen && <EstimateViewer alreadySigned={preparedSigned} base={base} headers={headers} customerName={data.name || ''} version={preparedEstimate} url={estimatePdfUrl} error={pdfError} onClose={() => { setEstimateViewerOpen(false); void refreshReportHistory(); }} />}
+              {estimateViewerOpen && <EstimateViewer alreadySigned={preparedSigned} approved={preparedApproved} rep={repPage} onApproved={() => setPreparedApproved(true)} base={base} headers={headers} customerName={data.name || ''} version={preparedEstimate} url={estimatePdfUrl} error={pdfError} onClose={() => { setEstimateViewerOpen(false); void refreshReportHistory(); }} />}
               {(data.estimate_needs_update || data.list_changed) && <p role="status">Your inventory has changed. The displayed price needs to be recalculated. Open the estimate to update it before signing.</p>}
               <ReportHistory signatureStatus={data.signature_status} requiresResign={data.signature_status === 'changed'} reports={data.report_history || []} onSelect={selectReport} disabled={busy || calculatingPrice || answersSaving || reportState === 'running'} fetchSignedPdf={fetchSignedPdf} />
               {!showQuestions && answersSaving && <p role="status">Saving your answers in the background...</p>}
