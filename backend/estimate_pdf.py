@@ -250,7 +250,10 @@ def _summary(data, styles, p, table, link=True):
         elif rate:
             basis = f"{float(estimate.get('cuft') or 0):,.2f} cuft @ ${rate[1]} per cuft"
         if charge.get('discount_amount', 0) > 0:
-            basis += f"\nBefore discount: {money(charge['subtotal'])}\nDiscount ({charge['discount_percent']:g}%): -{money(charge['discount_amount'])}"
+            # A rep discount adds "| <title>: -$X" to the saved description; these two lines say it once.
+            basis = re.sub(r' \| [^|]*: -\$[\d,]+\.\d{2}( \(new rate [^)]*\))?$', '', basis)
+            title = (data.get('discount_titles') or {}).get(charge.get('id')) or 'Discount'
+            basis += f"\nBefore discount: {money(charge['subtotal'])}\n{title} ({charge['discount_percent']:g}%): -{money(charge['discount_amount'])}"
         charges.append([p(charge['name']), p(basis, 'NoteEstimate'), p('Pending' if charge.get('pending') else money(charge['total']), 'RightEstimate')])
     service_lines, service_total, service_pending = _services_total(estimate)
     if service_lines:
