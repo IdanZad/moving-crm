@@ -97,7 +97,7 @@ def _services_total(estimate):
     return lines, sum(float(charge.get('total') or 0) for charge in lines), any(charge.get('pending') for charge in lines)
 
 
-def _services_table(data, p, table):
+def _services_table(data, p, table, styles):
     """Additional services and fees: each answer with its charge, then the other service lines, and their total."""
     from routes.pricing import customer_packing_charge_id
     lines, total, pending = _services_total(data['estimate'])
@@ -107,62 +107,70 @@ def _services_table(data, p, table):
     def charge_of(key):
         charge = by_id.get(customer_packing_charge_id(job_id, key)) if job_id else None
         if charge is None:
-            return money(0)
+            return 'No charge'
         shown.add(charge.get('id'))
         if charge.get('pending'):
             return 'Pending'
         if charge.get('discount_amount'):
-            return f"{money(charge.get('total'))}\n(before discount {money(charge.get('subtotal'))})"
-        return money(charge.get('total'))
+            # As on the customer page: the price before the discount crossed out, then the price, then the discount.
+            title = (data.get('discount_titles') or {}).get(charge.get('id')) or 'Discount'
+            return [Paragraph(f"<strike>{money(charge.get('subtotal'))}</strike>  <b>{money(charge.get('total'))}</b>", styles['RightEstimate']),
+                    p(f"{title}: -{money(charge['discount_amount'])} ({charge.get('discount_percent') or 0:g}%)", 'NoteEstimate')]
+        return amount(charge.get('total'))
+    def charge_cell(key):
+        value = charge_of(key)
+        return value if isinstance(value, list) else p(value, 'RightEstimate')
+    def amount(value):
+        return money(value) if float(value or 0) else 'No charge'
     def service(name, terms):
         return [p(name)] + ([p(terms, 'NoteEstimate')] if terms else [])
-    body = [[p('SERVICE'), p('YOUR ANSWER'), p('CHARGE', 'RightEstimate')]]
+    body = [[p('SERVICE'), p('DETAILS'), p('CHARGE', 'RightEstimate')]]
     stops = data.get('extra_stops')
     for group in (stops or {}).get('locations', []):
         terms = f"{group['free_miles']:g} miles free; ${group['stop_fee']:.2f} per chargeable stop plus ${group['per_mile']:.2f} per mile beyond the allowance."
         answer = '\n'.join(row['address'] + (f" - {row['miles']} miles" if row.get('miles') is not None else ' - distance pending')
-                           for row in group['stops']) or ('None' if group['answer'] is False else 'Not answered')
+                           for row in group['stops']) or (f"No extra {group['location']} stops" if group['answer'] is False else 'Not answered')
         amounts = [row['total'] for row in group['stops']]
         for row in group['stops']:
             shown.update(charge.get('id') for charge in lines if str(charge.get('id', '')).startswith('extra-stop:'))
-        cost = 'Pending' if any(amount is None for amount in amounts) else money(sum(amounts))
+        cost = 'Pending' if any(value is None for value in amounts) else amount(sum(amounts))
         body.append([service('Extra ' + group['location'] + ' stops', terms), p(answer, 'NoteEstimate'), p(cost, 'RightEstimate')])
     elevator = data.get('elevator')
     for row in (elevator or {}).get('locations', []):
-        answer = ('Not sure - pending confirmation' if row.get('unknown') else 'Yes' if row['uses_elevator']
-                  else 'No' if row['uses_elevator'] is not None else 'Not answered')
+        answer = ('Not sure - pending confirmation' if row.get('unknown') else 'Elevator used' if row['uses_elevator']
+                  else 'No elevator' if row['uses_elevator'] is not None else 'Not answered')
         body.append([service('Elevator - ' + row['location'], elevator['terms']), p(answer, 'NoteEstimate'),
-                     p(charge_of('elevator:' + row['location']), 'RightEstimate')])
+                     charge_cell('elevator:' + row['location'])])
     carry = data.get('long_carry')
     for row in (carry or {}).get('locations', []):
         answer = ('Truck access unknown - pending confirmation' if row.get('unknown')
                   else f"{row['distance_feet']} feet" if row['distance_feet'] is not None else 'Not answered')
         terms = f"First {carry['included_feet']} feet included; ${carry['rate_per_cuft']:.2f} per cu ft per additional {carry['increment_feet']} feet."
         body.append([service('Long carry - ' + row['location'], terms), p(answer, 'NoteEstimate'),
-                     p(charge_of('long_carry:' + row['location']), 'RightEstimate')])
+                     charge_cell('long_carry:' + row['location'])])
     stairs = data.get('stairs')
     for row in (stairs or {}).get('locations', []):
-        answer = ('Not sure - pending confirmation' if row.get('unknown')
-                  else f"{row['flights']} flight(s)" if row['flights'] is not None else 'Not answered')
+        answer = ('Not sure - pending confirmation' if row.get('unknown') else 'Not answered' if row['flights'] is None
+                  else 'No stairs' if not row['flights'] else f"{row['flights']} flight" + ('' if row['flights'] == 1 else 's'))
         terms = f"Up to {stairs['steps_per_flight']} steps is one flight; {stairs['free_flights']} free per address; ${stairs['rate_per_cuft']:.2f} per cu ft per additional flight."
         body.append([service('Stairs - ' + row['location'], terms), p(answer, 'NoteEstimate'),
-                     p(charge_of('stairs:' + row['location']), 'RightEstimate')])
+                     charge_cell('stairs:' + row['location'])])
     storage = data.get('storage')
     if storage:
         answer = (f"Earliest delivery date: {storage.get('available_date') or 'Not answered'}"
                   + (f"\n{storage['paid_periods']} paid period(s)" if storage.get('valid') else ''))
         terms = f"First {storage['free_days']} days free; ${storage['rate_per_cuft']:.2f} per cu ft per additional {storage['period_days']} days."
-        body.append([service('Storage', terms), p(answer, 'NoteEstimate'), p(charge_of('storage-periods'), 'RightEstimate')])
+        body.append([service('Storage', terms), p(answer, 'NoteEstimate'), charge_cell('storage-periods')])
     shuttle = data.get('shuttle')
     if shuttle:
         answer = ('Shuttle required for this delivery area' if shuttle['automatic']
                   else {True: 'Semi-trailer can park at delivery: Yes', False: 'Semi-trailer can park at delivery: No - shuttle required'}.get(shuttle.get('answer'), 'Not answered'))
-        body.append([service('Delivery truck access', None), p(answer, 'NoteEstimate'), p(charge_of('shuttle'), 'RightEstimate')])
+        body.append([service('Delivery truck access', None), p(answer, 'NoteEstimate'), charge_cell('shuttle')])
     # Lines with no answer of their own: packing, materials, item services, mileage fees.
     for charge in lines:
         if charge.get('id') in shown or (not charge.get('pending') and not charge.get('total')):
             continue
-        cost = 'Pending' if charge.get('pending') else money(charge['total'])
+        cost = 'Pending' if charge.get('pending') else amount(charge['total'])
         body.append([service(charge['name'], None), p(charge.get('description') or '', 'NoteEstimate'), p(cost, 'RightEstimate')])
     body.append([p('TOTAL ADDITIONAL SERVICES AND FEES'), p('Includes charges pending calculation' if pending else '', 'NoteEstimate'),
                  p(money(total), 'RightEstimate')])
@@ -341,7 +349,7 @@ def build_estimate_pdf(data, rows):
     story.append(p('Inventory totals', 'SectionEstimate'))
     story.append(p(totals(entries_all)))
     if _services_total(data['estimate'])[0] or any(data.get(key) for key in ('extra_stops', 'elevator', 'long_carry', 'stairs', 'storage', 'shuttle')):
-        story += [p('Additional services and fees', 'SectionEstimate'), _services_table(data, p, table)]
+        story += [p('Additional services and fees', 'SectionEstimate'), _services_table(data, p, table, styles)]
     general = [q for q in data.get('item_questions', []) if q.get('all_items')
                and not (q.get('saved') or {}).get('selected_items')]
     if general:

@@ -107,7 +107,7 @@ def test_fully_discounted_stairs_moves_from_breakdown_to_details():
     text=' '.join(' '.join(page.get_text().split()) for page in doc)
     # Not in the page-one breakdown; its row in the services table shows the answer and the discounted charge.
     assert 'Pickup stairs' not in text and 'Before discount' not in text
-    assert 'Stairs - pickup' in text and '2 flight(s) $0.00 (before discount $57.20)' in text
+    assert 'Stairs - pickup' in text and '2 flights $57.20 $0.00 Discount: -$57.20 (100%)' in text
 
 
 def test_material_price_list_is_appended_with_no_packing_and_does_not_change_total():
