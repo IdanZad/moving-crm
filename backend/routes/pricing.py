@@ -138,15 +138,25 @@ def _plan_destination_for_delivery(
     return destination
 
 
+def _plan_versions(company_id, db):
+    """Count and last change of the company's active plans and local routes, in one query."""
+    from sqlalchemy import select
+    active = (PricingPlan.company_id == company_id) & PricingPlan.active.is_(True)
+    local = LocalPricingRoute.company_id == company_id
+    row = db.execute(select(select(func.count(PricingPlan.id)).where(active).scalar_subquery(),
+                            select(func.max(PricingPlan.updated_at)).where(active).scalar_subquery(),
+                            select(func.count(LocalPricingRoute.id)).where(local).scalar_subquery(),
+                            select(func.max(LocalPricingRoute.updated_at)).where(local).scalar_subquery())).one()
+    return [row[0], row[1]], [row[2], row[3]]
+
+
 def _pricing_match_key(lead, job, db):
     """Fingerprint of everything a plan match depends on; it changes when any of them changes."""
     company_id = job.company_id or lead.company_id
     if not company_id:
         return None
-    plans = db.query(func.count(PricingPlan.id), func.max(PricingPlan.updated_at)).filter(
-        PricingPlan.company_id == company_id, PricingPlan.active.is_(True)).one()
-    routes = db.query(func.count(LocalPricingRoute.id), func.max(LocalPricingRoute.updated_at)).filter(
-        LocalPricingRoute.company_id == company_id).one()
+    from request_cache import cached
+    plans, routes = cached(db, ('plan-check', company_id), lambda: _plan_versions(company_id, db))
     locations = json.loads(getattr(job, 'customer_packing_package', None) or '{}').get('pricing_locations', [])
     source = [company_id, job.pickup_zip, job.delivery_zip, getattr(lead, 'move_type', None), locations, list(plans), list(routes)]
     return hashlib.sha256(json.dumps(source, sort_keys=True, default=str).encode()).hexdigest()
@@ -159,8 +169,15 @@ def infer_job_move_type(lead, job, db, plans=None):
     key = _pricing_match_key(lead, job, db)
     if key and getattr(job, 'pricing_match_key', None) == key:
         plan_id = job.pricing_plan_id
-        return job.pricing_move_type, db.get(PricingPlan, plan_id) if plan_id else None
+        # Only the plan row, kept for the request; each of its tables loads once, when something uses it.
+        from sqlalchemy.orm import lazyload
+        from request_cache import cached
+        plan = cached(db, ('plan', plan_id), lambda: db.get(PricingPlan, plan_id, options=[lazyload('*')])) if plan_id else None
+        return job.pricing_move_type, plan
     move_type, plan = _match_job_move_type(lead, job, db)
+    if plan is not None:
+        from request_cache import cached
+        cached(db, ('plan', plan.id), lambda: plan)  # The rest of the request uses this plan as loaded.
     if key:
         job.pricing_match_key, job.pricing_plan_id, job.pricing_move_type = key, plan.id if plan else None, move_type
         job.minimum_cuft = None  # A new match may mean a different plan minimum.
@@ -183,8 +200,11 @@ def _match_job_move_type(
         return None, None
 
     if plans is None and company_id:
+        # Matching reads only each plan's pickup areas and rates; its other tables load when something uses them.
+        from sqlalchemy.orm import lazyload, selectinload
         plans = (
             db.query(PricingPlan)
+            .options(lazyload('*'), selectinload(PricingPlan.pickup_rows), selectinload(PricingPlan.rates))
             .filter(PricingPlan.company_id == company_id, PricingPlan.active.is_(True))
             .order_by(PricingPlan.sort_order, PricingPlan.name)
             .all()

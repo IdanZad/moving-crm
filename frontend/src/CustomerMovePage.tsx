@@ -597,9 +597,11 @@ export default function CustomerMovePage() {
     setPreparedEstimate('');
     setPreparedSigned(false);
     try {
-      const mileage = await call('/mileage');
-      await saveBrowserMileage(mileage.routes, data?.google_maps_browser_key || '', true);
-      const prepared = await call('/estimate-signatures', {});
+      // Signed: open the signed copy as saved. Otherwise a new estimate from what the page shows.
+      const prepared = data?.signature_status === 'signed'
+        ? {id: (await call('/estimate-signatures')).items[0]?.id as string, signed: true}
+        : await call('/estimate-signatures', {});
+      if (!prepared.id) throw new Error('Could not find the signed estimate. Please try again.');
       const response = await fetch(base + '/estimate-signatures/' + encodeURIComponent(prepared.id) + '/pdf', { headers, cache: 'no-store' });
       if (!response.ok) {
         const result = await response.json().catch(() => ({}));
@@ -610,8 +612,6 @@ export default function CustomerMovePage() {
       setEstimatePdfUrl(url);
       setPreparedEstimate(prepared.id);
       setPreparedSigned(prepared.signed === true);
-      // Opening may refresh an expired price; only the saved price needs reading again.
-      void loadSection('estimate', true);
     } catch (error) {
       const failure = error as Error & {detail?: {unanswered_questions?: string[]}};
       const message = failure.message || 'Could not prepare the estimate. Please try again.';

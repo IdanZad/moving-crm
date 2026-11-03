@@ -628,7 +628,6 @@ def details(access: PublicMoveAccess = Depends(verified), db: Session = Depends(
     state = json.loads(conversation.details or '{}') if conversation else {}
     if lead and job and _has_inventory_list(state):
         refresh_expired_price(lead, job, db)
-        db.refresh(access)
     return _move_details(access, db, individual_charges=is_rep_request(access, request))
 
 
@@ -638,9 +637,22 @@ def move_summary(access: PublicMoveAccess = Depends(verified), db: Session = Dep
     return _move_details(access, db, include_pricing=False)
 
 
+def _load_move(access, db, charges=False):
+    """Lead, job, company and conversation (and price lines) in one query; later reads come from the session,
+    which keeps them while the caller holds them."""
+    from sqlalchemy.orm import contains_eager, joinedload
+    query = (db.query(Lead, LeadJob, LeadLiveSwitch).select_from(Lead)
+             .join(LeadJob, (LeadJob.id == access.job_id) & (LeadJob.lead_id == Lead.id))
+             .outerjoin(LeadLiveSwitch, LeadLiveSwitch.lead_id == Lead.id)
+             .outerjoin(Company, Company.id == Lead.company_id)
+             .options(contains_eager(Lead.company), *([joinedload(LeadJob.charges)] if charges else []))
+             .filter(Lead.id == access.lead_id))
+    return query.one()
+
+
 @router.get('/api/public-moves/{access_id}/sections/{section}')
 def move_section(section: Literal['move', 'inventory', 'media', 'volume', 'estimate', 'pricing'], access: PublicMoveAccess = Depends(verified), db: Session = Depends(get_db), request: Request = None):
-    lead, job = db.get(Lead, access.lead_id), db.get(LeadJob, access.job_id)
+    lead, job, conversation = _load_move(access, db, charges=section in ('estimate', 'pricing'))
     if section == 'move':
         pickup, stops, delivery = _read_job_route(db, job)
         typed = json.loads(job.stop_types or '[]')
@@ -650,7 +662,6 @@ def move_section(section: Literal['move', 'inventory', 'media', 'volume', 'estim
                     company=company.name if company else 'Your moving team',
                     company_details={'name': company.name if company else 'Your moving team', 'phone': company.phone or '' if company else '', 'office_address': company.office_address or '' if company else '', 'logo': company.logo if company else '', 'color': company.color if company and company.color else resolve_company_color(company.name if company else None, None)},
                     link_sms=customer_link_sms_notice(access))
-    conversation = db.get(LeadLiveSwitch, lead.id)
     state = json.loads(conversation.details or '{}') if conversation else {}
     if section == 'inventory':
         return dict(inventory_draft=state.get('inventory_draft'), combined_inventory=resolve_catalog_names(state.get('spark_inventory_snapshot', []), db) if state.get('last_spark_status') == 'completed' else [],
@@ -672,14 +683,15 @@ def move_section(section: Literal['move', 'inventory', 'media', 'volume', 'estim
     if _has_inventory_list(state):
         from price_validity import refresh_expired_price
         refresh_expired_price(lead, job, db)
-        db.refresh(access)
+    saved = lambda: (job.pricing_match_key, job.minimum_cuft, job.pricing_options_key)
+    before = saved()
     result = _move_details(access, db, pricing_only=True, individual_charges=is_rep_request(access, request))
     from delivery_fees import browser_fee_routes
     from price_validity import price_is_locked
     result['mileage_routes'] = [] if price_is_locked(lead, job) else browser_fee_routes(lead, job, db)
-    # Keep a newly worked-out plan match, so the next load reads it instead of matching again.
-    from sqlalchemy import inspect as inspect_model
-    if any(inspect_model(job).attrs[name].history.has_changes() for name in ('pricing_match_key', 'minimum_cuft', 'pricing_options_key')):
+    # Keep a newly worked-out plan match and cards, so the next load reads them instead of working them out again.
+    # Compared by value: an automatic flush before a later query clears SQLAlchemy's change history.
+    if saved() != before:
         db.commit()
     return result
 
@@ -1067,52 +1079,13 @@ def list_estimate_signatures(access: PublicMoveAccess = Depends(verified), db: S
     return {'items': signed_estimates(db, access.lead_id, access.job_id)}
 
 
-def refresh_estimate_for_view(access, db):
-    from models import LeadJobCharge
-    from price_validity import price_is_locked, refresh_expired_price
-    lead = db.get(Lead, access.lead_id)
-    job = db.get(LeadJob, access.job_id)
-    if price_is_locked(lead, job):
-        return
-    saved = db.query(LeadLiveSwitch).filter_by(lead_id=lead.id).first()
-    state = json.loads(saved.details or '{}') if saved else {}
-    # Never generate a replacement media report just to view an estimate.
-    if state.get('last_spark_status') != 'completed':
-        return
-    changed = inventory_draft_changed(state)
-    if changed:
-        from manual_inventory import replace_current_inventory
-        draft = state.get('inventory_draft') or {}
-        if not draft.get('body'):
-            raise HTTPException(409, 'The saved inventory draft is incomplete. Open the inventory and save it again.')
-        replace_current_inventory(ManualInventoryInput.model_validate(draft['body']), access, db)
-    selection = json.loads(job.customer_packing_package or '{}')
-    pending = db.query(LeadJobCharge.id).filter(
-        LeadJobCharge.job_id == job.id,
-        LeadJobCharge.description.startswith('Calculation pending: ')).first()
-    if changed or state.get('spark_pricing_ready') is False or job.price is None or job.price_refresh_error or selection.get('pricing_pending') or pending:
-        recalculate_current_price(access, db)
-        if changed:
-            # The draft was applied and priced successfully; it is now the
-            # report's inventory baseline, not an outstanding edit.
-            saved = db.query(LeadLiveSwitch).filter_by(lead_id=lead.id).with_for_update().one()
-            current = json.loads(saved.details or '{}')
-            if (current.get('inventory_draft') or {}).get('body') == draft['body']:
-                current['report_list_body'] = draft['body']
-                from spark_history import remember_report
-                remember_report(current)
-                saved.details = json.dumps(current)
-                db.commit()
-    else:
-        refresh_expired_price(lead, job, db)
-
-
 @router.post('/api/public-moves/{access_id}/estimate-signatures')
 def prepare_estimate_signature(access: PublicMoveAccess = Depends(verified), db: Session = Depends(get_db)):
     from fastapi.encoders import jsonable_encoder
     from models import EstimateSignature
     from estimate_pdf import build_estimate_pdf
-    refresh_estimate_for_view(access, db)
+    # A new, unsigned estimate from what is saved, as the page shows it: nothing is recalculated or compared.
+    # A signed estimate is opened from its saved copy instead (estimate-signatures/{id}/pdf).
     data, rows = _estimate_document(access, db)
     if data.get('list_changed'):
         raise HTTPException(409, 'The saved inventory draft differs from the inventory used for this estimate. Update the estimate from that inventory first.')
@@ -1121,18 +1094,6 @@ def prepare_estimate_signature(access: PublicMoveAccess = Depends(verified), db:
     pending = [c.get('name') or 'Unnamed charge' for c in data['estimate'].get('charges', []) if c.get('pending')]
     if pending:
         raise HTTPException(409, 'These charges still need calculation: ' + ', '.join(pending) + '.')
-    from estimate_signature_history import estimate_state
-    signed = db.query(EstimateSignature.id, EstimateSignature.snapshot).filter(
-        EstimateSignature.lead_id == access.lead_id, EstimateSignature.job_id == access.job_id,
-        EstimateSignature.signed_at.isnot(None),
-    ).order_by(EstimateSignature.signed_at.desc()).first()
-    if signed and not data.get('estimate_needs_update'):
-        try:
-            snapshot = json.loads(signed.snapshot)
-            if estimate_state(snapshot['data'], snapshot.get('rows', [])) == estimate_state(data, rows):
-                return {'id': signed.id, 'signed': True}
-        except (ValueError, KeyError, TypeError, AttributeError):
-            pass
     data['prepared_at'] = datetime.now(timezone.utc).strftime('%B %d, %Y (UTC)')
     record = EstimateSignature(id=str(uuid4()), lead_id=access.lead_id, job_id=access.job_id,
         report_id=(data.get('spark') or {}).get('id'),
