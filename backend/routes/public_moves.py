@@ -679,7 +679,7 @@ def move_section(section: Literal['move', 'inventory', 'media', 'volume', 'estim
     result['mileage_routes'] = [] if price_is_locked(lead, job) else browser_fee_routes(lead, job, db)
     # Keep a newly worked-out plan match, so the next load reads it instead of matching again.
     from sqlalchemy import inspect as inspect_model
-    if any(inspect_model(job).attrs[name].history.has_changes() for name in ('pricing_match_key', 'minimum_cuft')):
+    if any(inspect_model(job).attrs[name].history.has_changes() for name in ('pricing_match_key', 'minimum_cuft', 'pricing_options_key')):
         db.commit()
     return result
 
@@ -867,6 +867,24 @@ def _move_details(access, db, *, refresh_report=True, include_pricing=True, pric
 
 @with_job_locations
 def _customer_pricing_options(lead, job, db):
+    """The service cards: read as last built, and built again only when something they use has changed."""
+    import hashlib
+    from fastapi.encoders import jsonable_encoder
+    from routes.pricing import infer_job_move_type
+    infer_job_move_type(lead, job, db)  # Brings the saved plan match up to date.
+    conversation = db.get(LeadLiveSwitch, lead.id)
+    source = [job.pricing_match_key, job.customer_packing_package, job.customer_packing, job.estimated_materials,
+              job.move_date, job.stop_types, _read_job_route(db, job), str(lead.volume),
+              conversation.details if conversation else '']
+    key = hashlib.sha256(json.dumps(source, default=str).encode()).hexdigest()
+    if job.pricing_options_key == key and job.pricing_options_cache:
+        return json.loads(job.pricing_options_cache)
+    options = jsonable_encoder(_build_customer_pricing_options(lead, job, db))
+    job.pricing_options_cache, job.pricing_options_key = json.dumps(options), key
+    return options
+
+
+def _build_customer_pricing_options(lead, job, db):
     from routes.pricing import (customer_packing_options, customer_packing_package,
                                 customer_shuttle, customer_storage, customer_elevator,
                                 customer_long_carry, customer_stairs, customer_minimum_volume)
@@ -944,24 +962,56 @@ def _item_answer_delta(access, lead, company, db, inventory_changed, individual_
 
 
 def _estimate_document(access, db):
-    data = _move_details(access, db, refresh_report=False)
+    """The estimate as the page shows it, read from what is saved: price lines, cards, answers and inventory."""
+    from inventory_questions import questions
+    lead, job = db.get(Lead, access.lead_id), db.get(LeadJob, access.job_id)
+    pickup, stops, delivery = _read_job_route(db, job)
+    typed = json.loads(job.stop_types or '[]')
+    conversation = db.get(LeadLiveSwitch, lead.id)
+    state = json.loads(conversation.details or '{}') if conversation else {}
+    company = lead.company or db.query(Company).filter(Company.is_default_company.is_(True)).one_or_none()
+    company_details = {'name': company.name if company else 'Your moving team', 'phone': company.phone or '' if company else '',
+                       'office_address': company.office_address or '' if company else '',
+                       'color': company.color if company and company.color else resolve_company_color(company.name if company else None, None),
+                       'logo': company.logo if company else '', 'dot_number': company.dot_number or '' if company else ''}
+    spark = {'id': state['last_spark_id'], 'status': state.get('last_spark_status', 'queued')} if state.get('last_spark_id') else None
+    saved_package = json.loads(job.customer_packing_package or '{}')
+    pricing_error = job.price_refresh_error or (saved_package.get('pricing_save_error') or 'Your changes are saved. An updated estimate is pending because pricing is not available for this route yet.'
+                                                if saved_package.get('pricing_pending') else '')
+    estimate = saved_estimate(access, lead, job, state)
+    cards = {}
+    if estimate is not None and (job.company_id or lead.company_id):
+        try:
+            cards = _customer_pricing_options(lead, job, db)
+            estimate['minimum_cuft'] = cards.get('minimum_cuft')
+        except HTTPException as exc:
+            if exc.status_code not in (422, 502, 503, 504):
+                raise
+            pricing_error = pricing_error or 'We could not load pricing options for your address. Your saved details and estimate have not changed. Please retry or contact your moving team.'
+    files = active_report_files(access, db)
+    data = dict({name: cards.get(name) for name in ('extra_stops', 'elevator', 'long_carry', 'stairs', 'storage', 'shuttle', 'packing_package')},
+                packing_items=cards.get('packing_items', []), pricing_error=pricing_error, estimate=estimate, spark=spark,
+                item_questions=questions(company, state, db) if spark and spark['status'] == 'completed' else [],
+                name=lead.full_name, phone=lead.phone or '', email=lead.email or '', move_date=job.move_date or '',
+                pickup=pickup, delivery=delivery, company=company_details['name'], company_details=company_details,
+                stops=[{'address': address, 'type': typed[i].get('type') if i < len(typed) and typed[i].get('address') == address else None} for i, address in enumerate(stops)],
+                list_changed=inventory_draft_changed(state),
+                files_changed={f.id for f in files} != {row['id'] for row in state.get('report_files', [])})
+    data['estimate_needs_update'] = data['list_changed'] or state.get('spark_pricing_ready') is False
     from estimate_questions import unanswered_questions
     missing = data.get('unanswered_questions', unanswered_questions(data))
     if missing or data.get('pricing_error'):
         raise HTTPException(409, {'message': 'Answer all required questions before viewing your estimate PDF.', 'unanswered_questions': missing})
     if not data.get('estimate') or not data.get('spark') or data['spark']['status'] != 'completed':
         raise HTTPException(409, 'Your inventory and estimate must be ready before downloading.')
-    conversation = db.get(LeadLiveSwitch, access.lead_id)
-    state = json.loads(conversation.details) if conversation else {}
     rows = resolve_catalog_names(state.get('question_original_rows', state.get('spark_inventory_snapshot', [])), db)
     if not rows:
         raise HTTPException(409, 'There is no inventory to include in this estimate.')
     from item_selectors import inventory_selectors
     data['item_services'] = inventory_selectors(access, db)
     from company_documents import estimate_documents
-    job = db.get(LeadJob, access.job_id)
-    data['documents'] = estimate_documents(db.get(Lead, access.lead_id), job, db)
-    data['customer_notes'] = (job.customer_notes if job else '') or ''
+    data['documents'] = estimate_documents(lead, job, db)
+    data['customer_notes'] = job.customer_notes or ''
     return data, rows
 
 

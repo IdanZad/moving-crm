@@ -544,6 +544,9 @@ class LeadJob(Base):
     pricing_match_key = Column(String(64))
     # The plan's minimum billable cu ft for this job, stored once per plan match.
     minimum_cuft = Column(Integer)
+    # The customer page's service cards as last built, and a fingerprint of everything they were built from.
+    pricing_options_cache = Column(Text)
+    pricing_options_key = Column(String(64))
     lead_id = Column(String(36), ForeignKey("leads.id"), nullable=False, index=True)
     company_id = Column(String(36), ForeignKey("companies.id"), nullable=True, index=True)
     dispatch_company_id = Column(String(36), ForeignKey("companies.id"), nullable=True, index=True)

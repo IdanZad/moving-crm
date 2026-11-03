@@ -461,7 +461,7 @@ export default function CustomerMovePage() {
     type Group = Charge & {children?: (Charge & {heading?: string; displayName?: string})[]; target?: NonNullable<ReturnType<typeof chargeQuestion>>};
     const result: Group[] = [];
     const groups = new Map<string, Group>();
-    const titles: Record<PricingStep, string> = {stops: 'Additional stops', elevator: 'Elevator', access: 'Truck access', stairs: 'Stairs', storage: 'Delivery date', bulky: 'Packing & crating', package: 'Packing services', items: 'Moving terms'};
+    const titles: Record<PricingStep, string> = {stops: 'Additional stops', elevator: 'Elevator', access: 'Truck access', stairs: 'Stairs', storage: 'Storage', bulky: 'Packing & crating', package: 'Packing services', items: 'Moving terms'};
     for (const charge of data?.estimate?.charges || []) {
       const target = chargeQuestion(charge);
       if (!target) { result.push(charge); continue; }
@@ -610,7 +610,8 @@ export default function CustomerMovePage() {
       setEstimatePdfUrl(url);
       setPreparedEstimate(prepared.id);
       setPreparedSigned(prepared.signed === true);
-      void refreshDetails(true);
+      // Opening may refresh an expired price; only the saved price needs reading again.
+      void loadSection('estimate', true);
     } catch (error) {
       const failure = error as Error & {detail?: {unanswered_questions?: string[]}};
       const message = failure.message || 'Could not prepare the estimate. Please try again.';
