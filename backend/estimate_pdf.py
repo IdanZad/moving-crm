@@ -209,7 +209,7 @@ def _template(output, company):
                              bottomMargin=53, title='Moving estimate', author=company.get('name') or '')
 
 
-def _summary(data, styles, p, table):
+def _summary(data, styles, p, table, link=True):
     """Details, price breakdown, customer note and signature: the part that belongs on page one."""
     company = data.get('company_details') or {}
     estimate = data['estimate']
@@ -249,7 +249,12 @@ def _summary(data, styles, p, table):
         charges.append([p(charge['name']), p(basis, 'NoteEstimate'), p('Pending' if charge.get('pending') else money(charge['total']), 'RightEstimate')])
     service_lines, service_total, service_pending = _services_total(estimate)
     if service_lines:
-        charges.append([p('Additional services and fees'), p('See Additional services and fees' + (' (includes pending charges)' if service_pending else ''), 'NoteEstimate'),
+        # A link to the services table further down.
+        # Measuring page one builds it alone, without the table to link to; the text takes the same room.
+        text = 'See Additional services and fees'
+        text = f'<a href="#additional-services" color="#1a5fb4"><u>{text}</u></a>' if link else f'<u>{text}</u>'
+        link = Paragraph(text + (' (includes pending charges)' if service_pending else ''), styles['NoteEstimate'])
+        charges.append([p('Additional services and fees'), link,
                         p(money(service_total), 'RightEstimate')])
     if len(charges) == 1:
         charges.append([p('Moving estimate'), p('Not specified', 'NoteEstimate'), p(money(estimate['price']), 'RightEstimate')])
@@ -290,7 +295,7 @@ def _signature_block(data, p):
 
 def _summary_pages(data, size):
     doc = _template(BytesIO(), {})
-    doc.build(_summary(data, *_kit(size)))
+    doc.build(_summary(data, *_kit(size), link=False))
     return doc.page
 
 
@@ -349,7 +354,8 @@ def build_estimate_pdf(data, rows):
     story.append(p('Inventory totals', 'SectionEstimate'))
     story.append(p(totals(entries_all)))
     if _services_total(data['estimate'])[0] or any(data.get(key) for key in ('extra_stops', 'elevator', 'long_carry', 'stairs', 'storage', 'shuttle')):
-        story += [p('Additional services and fees', 'SectionEstimate'), _services_table(data, p, table, styles)]
+        story += [Paragraph('<a name="additional-services"/>Additional services and fees', styles['SectionEstimate']),
+                  _services_table(data, p, table, styles)]
     general = [q for q in data.get('item_questions', []) if q.get('all_items')
                and not (q.get('saved') or {}).get('selected_items')]
     if general:
