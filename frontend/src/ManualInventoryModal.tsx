@@ -164,7 +164,7 @@ function RoomCard({ room, selected, busy, summary, onSelect, onRename, onDelete 
     <button type="button" className="mi-remove" disabled={busy} aria-label={`Delete room ${room.name}`} onClick={onDelete}>&times;</button>
   </article>;
 }
-export default function ManualInventoryModal({ loadCatalog, submitActions, downloadPdf, onDone, onClose, draftKey, loadInventory, packing, imageEndpoint, linkKey='', session='', visible=true }: {
+export default function ManualInventoryModal({ loadCatalog, searchCatalog, submitActions, downloadPdf, onDone, onClose, draftKey, loadInventory, packing, imageEndpoint, linkKey='', session='', visible=true }: {
   visible?: boolean;
   submitActions: (requestId: string, edits: InventoryEdits, revision: string, reportId: string | null) => Promise<{revision:string}>;
   loadInventory: () => Promise<{revision:string; report_id:string|null; rooms:Room[]}>;
@@ -174,17 +174,32 @@ export default function ManualInventoryModal({ loadCatalog, submitActions, downl
   linkKey?: string;
   session?: string;
   loadCatalog: () => Promise<Catalog>;
+  // Catalog items matching the text, or the given ids; the window never loads the whole catalog.
+  searchCatalog: (text: string, ids?: string[]) => Promise<CatalogItem[]>;
   downloadPdf: (body: { request_id: string; box_total: number; rooms: { room_type_id: string; name: string; items: { item_id: string; quantity: number; name?:string }[]; custom_items?: CustomItem[] }[] }) => Promise<void>;
   onClose: (changed?: boolean) => void;
   onDone: () => Promise<void>;
 }) {
   const [catalog, setCatalog] = useState<Catalog>();
+  // Items seen so far: searched, in the list, or part of a set.
+  const [known, setKnown] = useState<Map<string, CatalogItem>>(() => new Map());
+  const knownRef = useRef(known);
+  knownRef.current = known;
+  const addKnown = (list: CatalogItem[]) => {
+    if (!list.length) return;
+    const next = new Map(knownRef.current);
+    for (const item of list) next.set(item.id, item);
+    knownRef.current = next;
+    setKnown(next);
+  };
+  const searcher = useRef(searchCatalog);
+  searcher.current = searchCatalog;
   const [rooms, setRoomsState] = useState<Room[]>([]);
   function setRooms(update: Room[] | ((current: Room[]) => Room[])) {
     setRoomsState(current => {
       const next = typeof update === 'function' ? update(current) : update;
       if (!catalog) return next;
-      const definitions = new Map((catalog?.items || []).map(item => [item.id, item]));
+      const definitions = knownRef.current;
       return next.map(room => {
         const items = {...room.items};
         const custom = [...(room.custom_items || [])];
@@ -276,7 +291,7 @@ export default function ManualInventoryModal({ loadCatalog, submitActions, downl
         inFlight.current = snapshot;
         setSaveStatus('Saving...');
         try {
-          const actions = inventoryActions(savedRooms.current || [], snapshot, catalog?.items || []);
+          const actions = inventoryActions(savedRooms.current || [], snapshot, [...knownRef.current.values()]);
           if (hasInventoryEdits(actions)) {
             const requestId = requestIds.current.get(snapshot) || crypto.randomUUID();
             requestIds.current.set(snapshot, requestId);
@@ -311,11 +326,11 @@ export default function ManualInventoryModal({ loadCatalog, submitActions, downl
     latest.current = rooms;
     if (loadedRooms.current === rooms) {
       loadedRooms.current = null;
-      if (!hasInventoryEdits(inventoryActions(savedRooms.current || [], rooms, catalog.items))) return;
+      if (!hasInventoryEdits(inventoryActions(savedRooms.current || [], rooms, [...knownRef.current.values()]))) return;
     }
     // Counter edits stay local until the service picker closes.
     if (openService) {
-      dirty.current = hasInventoryEdits(inventoryActions(savedRooms.current || [], rooms, catalog.items));
+      dirty.current = hasInventoryEdits(inventoryActions(savedRooms.current || [], rooms, [...knownRef.current.values()]));
       if (dirty.current) setSaveStatus('Unsaved changes');
       return;
     }
@@ -343,6 +358,7 @@ export default function ManualInventoryModal({ loadCatalog, submitActions, downl
     let active = true;
     Promise.all([loader.current(), inventoryLoader.current()]).then(([value, editor]) => {
       if (!active) return;
+      addKnown(value.items);
       setCatalog(value);
       revision.current = editor.revision;
       reportId.current = editor.report_id;
@@ -356,6 +372,9 @@ export default function ManualInventoryModal({ loadCatalog, submitActions, downl
         }
       } catch { /* The server inventory remains authoritative. */ }
       const loaded: Room[] = structuredClone(saved || serverRooms);
+      // Catalog rows from an unsent draft need their item details.
+      const missing = [...new Set(loaded.flatMap(r => Object.keys(r.items)))].filter(id => !knownRef.current.has(id));
+      if (missing.length) searcher.current('', missing).then(list => { if (active) addKnown(list); }).catch(() => undefined);
       loadedRooms.current = loaded;
       savedRooms.current = serverRooms;
       setRooms(loaded);
@@ -369,7 +388,7 @@ export default function ManualInventoryModal({ loadCatalog, submitActions, downl
     let active = true;
     setCatalogRefreshError('');
     loader.current().then(value => {
-      if (active) setCatalog(value);
+      if (active) { addKnown(value.items); setCatalog(value); }
     }).catch(() => {
       if (active) setCatalogRefreshError('Could not refresh item services. Close and reopen the inventory to try again.');
     });
@@ -383,7 +402,21 @@ export default function ManualInventoryModal({ loadCatalog, submitActions, downl
     modal.current?.focus();
     return () => { document.body.style.overflow = overflow; previous?.focus(); };
   }, [visible]);
-  const items = new Map((catalog?.items || []).map(item => [item.id, item]));
+  const items = known;
+  const [searchResults, setSearchResults] = useState<CatalogItem[]>([]);
+  const [searching, setSearching] = useState(false);
+  useEffect(() => {
+    const text = catalogSearch.trim();
+    if (!text) { setSearchResults([]); setSearching(false); return; }
+    let active = true;
+    setSearching(true);
+    const timer = window.setTimeout(() => {
+      searcher.current(text).then(list => { if (active) { addKnown(list); setSearchResults(list); } })
+        .catch(() => { if (active) setSearchResults([]); })
+        .finally(() => { if (active) setSearching(false); });
+    }, 250);
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [catalogSearch]);
   const total = (room: Room, field: 'cuft' | 'weight') => Object.entries(room.items).reduce((sum, [id, qty]) => sum + (items.get(id)?.[field] || 0) * qty, 0) + (room.custom_items || []).reduce((sum, item) => sum + (item.going === false ? 0 : (field === 'cuft' ? item.cuft : item.unit_weight || 0) * item.quantity), 0);
   const count = (room: Room) => Object.values(room.items).reduce((sum, qty) => sum + qty, 0) + (room.custom_items || []).reduce((sum, item) => sum + item.quantity, 0);
   const pieces = (room: Room) => Object.entries(room.items).reduce((sum, [id, qty]) => sum + qty * piecesPerItem(room.item_names?.[id] || items.get(id)?.name || ''), 0)
@@ -396,7 +429,7 @@ export default function ManualInventoryModal({ loadCatalog, submitActions, downl
   const room = rooms.find(r => r.id === selected);
   const catalogWords = catalogSearch.toLowerCase().trim().split(/\s+/).filter(Boolean);
   const catalogEntries: (CatalogItem & { set?: CatalogSet })[] = [
-    ...(catalog?.items || []),
+    ...searchResults,
     ...(catalog?.sets || []).map(set => ({
       id: `set:${set.id}`, name: set.name, set, weight: 0,
       description: set.components.map(part => `${part.quantity} x ${items.get(part.item_id)?.name || 'Unavailable item'}`).join(', '),
@@ -563,7 +596,7 @@ export default function ManualInventoryModal({ loadCatalog, submitActions, downl
                 <button type="button" disabled={busy || entryQuantity(room, item) >= entryLimit(room, item)} aria-label={`Add one ${item.name} to ${room.name}`} title="Add one" onClick={() => setRooms(current => current.map(r => r.id === room.id ? setEntryQuantity(r, item, entryQuantity(r, item) + 1) : r))}>+</button>
               </div>
             </div>)}
-            {!catalogMatches.length && <p>No matching items. You can add a custom item above.</p>}
+            {searching ? <p role="status">Searching...</p> : !catalogSearch.trim() ? <p>Type to search items.</p> : !catalogMatches.length && <p>No matching items. You can add a custom item above.</p>}
             {catalogMatches.length > catalogLimit && <p className="mi-catalog-more">Scroll for more items</p>}
           </div>
         </section>}

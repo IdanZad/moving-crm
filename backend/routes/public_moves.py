@@ -22,7 +22,7 @@ from urllib.parse import quote, urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import boto3
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Header, HTTPException, Request, Response, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Header, HTTPException, Query, Request, Response, UploadFile
 from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import case, func, or_, text
 from sqlalchemy.dialects.postgresql import insert
@@ -1065,6 +1065,13 @@ def clear_estimate_signature(signature_id: str, access: PublicMoveAccess = Depen
 @router.get('/api/public-moves/{access_id}/inventory-catalog')
 def get_customer_inventory_catalog(access: PublicMoveAccess = Depends(verified), db: Session = Depends(get_db)):
     return catalog(db, access)
+
+
+@router.get('/api/public-moves/{access_id}/inventory-catalog/search')
+def search_customer_inventory_catalog(q: str = Query(default='', max_length=200), ids: list[str] = Query(default=[], max_length=200),
+                                      access: PublicMoveAccess = Depends(verified), db: Session = Depends(get_db)):
+    from manual_inventory import search_catalog
+    return search_catalog(db, access, q, ids)
 
 
 class InventoryPdfInput(ManualInventoryInput):

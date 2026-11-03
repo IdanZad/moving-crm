@@ -183,16 +183,41 @@ def update_inventory_row(body, access, db):
     return {'ok': True}
 
 
-def catalog(db, access=None):
+def catalog_items(db, access, query):
+    """Catalog items as the inventory window shows them, with this move's item services."""
     from item_selectors import inventory_selectors
+    rows = query.all()
+    selectors = inventory_selectors(access, db, {r.id for r in rows}) if access and rows else {}
+    return [{'id': r.id, 'name': r.name, 'description': r.description,
+             'cuft': float(r.cuft), 'weight': float(r.weight), 'selectors': selectors.get(r.id, [])} for r in rows]
+
+
+def catalog(db, access=None):
+    """Room types and sets. Items are searched on demand; only the sets' component items are included."""
     from models import InventoryCatalogSet
-    selectors = inventory_selectors(access, db) if access else {}
+    sets = [{'id': row.id, 'name': row.name, 'components': json.loads(row.components)}
+            for row in db.query(InventoryCatalogSet).order_by(InventoryCatalogSet.name).all()]
+    component_ids = {part['item_id'] for row in sets for part in row['components']}
     return {'rooms': [{'id': r.id, 'name': r.name} for r in db.query(InventoryRoomType).order_by(InventoryRoomType.sort_order).all()],
-            'sets': [{'id': row.id, 'name': row.name, 'components': json.loads(row.components)}
-                     for row in db.query(InventoryCatalogSet).order_by(InventoryCatalogSet.name).all()],
-            'items': [{'id': r.id, 'name': r.name, 'description': r.description,
-                       'cuft': float(r.cuft), 'weight': float(r.weight), 'selectors': selectors.get(r.id, [])}
-                      for r in db.query(InventoryCatalogItem).filter_by(active=True, deleted=False).order_by(InventoryCatalogItem.name, InventoryCatalogItem.cuft).all()]}
+            'sets': sets,
+            'items': search_catalog(db, access, ids=component_ids) if component_ids else []}
+
+
+def search_catalog(db, access, text='', ids=(), limit=50):
+    """Up to `limit` items matching every word of `text` in their name or description, or the given ids."""
+    from sqlalchemy import or_
+    query = db.query(InventoryCatalogItem).filter(InventoryCatalogItem.active.is_(True), InventoryCatalogItem.deleted.is_(False))
+    if ids:
+        return catalog_items(db, access, query.filter(InventoryCatalogItem.id.in_(list(ids)[:200])))
+    words = text.split()
+    if not words:
+        return []
+    for word in words[:10]:
+        # Typed % and _ match literally.
+        pattern = '%' + word.replace('!', '!!').replace('%', '!%').replace('_', '!_') + '%'
+        query = query.filter(or_(InventoryCatalogItem.name.ilike(pattern, escape='!'),
+                                 InventoryCatalogItem.description.ilike(pattern, escape='!')))
+    return catalog_items(db, access, query.order_by(InventoryCatalogItem.name, InventoryCatalogItem.cuft).limit(limit))
 
 
 def build_inventory(body, db, allow_empty=False):
