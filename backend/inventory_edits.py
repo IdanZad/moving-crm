@@ -190,7 +190,7 @@ def load_inventory_editor(access, db):
                 quantity=qty, unit_cuft=Decimal(str(row.get('unit_cuft') or float(row.get('cuft') or 0)/qty or 0.01)),
                 unit_weight=Decimal(str(row.get('unit_weight') or float(row.get('weight') or 0)/qty)),
                 going=row.get('going') is not False, mover_pack=pack, sort_order=index,
-                mover_pack_count=row.get('mover_pack_count'),
+                mover_pack_count=row.get('mover_pack_count'), manual=row.get('manual'),
                 selections=json.dumps(row.get('selections') or {}),
                 set_id=row.get('set_id'), set_name=row.get('set_name'),
                 inventory_record_id=record.id if record else None)
@@ -299,6 +299,7 @@ def save_inventory_edits(body, access, db):
             if key == 'selections':
                 value = validated_selections(value, selectors.get(row.catalog_item_id, []), json.loads(row.selections or '{}'))
             setattr(row, 'unit_cuft' if key == 'cuft' else key, value)
+        row.manual = True  # Edited by hand: a new report keeps it.
         changed.append(row)
     next_order = (db.query(func.max(InventoryEditItem.sort_order)).filter_by(job_id=job.id).scalar() or 0) + 1 if body.add else 0
     for item in body.add:
@@ -315,7 +316,7 @@ def save_inventory_edits(body, access, db):
             unit_weight=catalog.weight if catalog else item.unit_weight, going=item.going is not False,
             mover_pack=item.mover_pack, mover_pack_count=item.mover_pack_count, sort_order=next_order,
             set_id=str(item.set_id) if item.set_id else None, set_name=item.set_name,
-            selections=validated_selections(item.selections, selectors.get(item.catalog_item_id, [])))
+            selections=validated_selections(item.selections, selectors.get(item.catalog_item_id, [])), manual=True)
         next_order += 1
         db.add(row)
         changed.append(row)
@@ -369,7 +370,7 @@ def project(job, access, details, joined, db):
         going=r.going, mover_pack=None if pack_count(r) is not None else r.mover_pack, mover_pack_count=pack_count(r),
         catalog_item_id=r.catalog_item_id, item_id=r.catalog_item_id or 'custom-'+r.id,
         name_override=r.name is not None, _inventory_record_id=r.inventory_record_id,
-        set_id=r.set_id, set_name=r.set_name,
+        set_id=r.set_id, set_name=r.set_name, manual=r.manual,
         selections=json.loads(r.selections or '{}')) for r,name in joined]
     serialized_rooms = [dict(id=r.id, name=r.name, room_type_id=r.room_type_id or '', items=[x for x in rows if x['room_id']==r.id]) for r in rooms]
     volume, weight = sum(r['cuft'] for r in rows), sum(r['weight'] for r in rows)

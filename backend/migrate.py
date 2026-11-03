@@ -141,6 +141,7 @@ def migrate() -> None:
         connection.execute(text('ALTER TABLE inventory_edit_items ADD COLUMN IF NOT EXISTS set_id VARCHAR(36)'))
         connection.execute(text('ALTER TABLE inventory_edit_items ADD COLUMN IF NOT EXISTS set_name VARCHAR(200)'))
         connection.execute(text('ALTER TABLE inventory_edit_items ADD COLUMN IF NOT EXISTS mover_pack_count INTEGER'))
+        connection.execute(text('ALTER TABLE inventory_edit_items ADD COLUMN IF NOT EXISTS manual BOOLEAN'))
         for column, kind in (('pricing_plan_id', 'VARCHAR(36)'), ('pricing_move_type', 'VARCHAR(50)'), ('pricing_match_key', 'VARCHAR(64)'),
                              ('minimum_cuft', 'INTEGER'), ('pricing_options_cache', 'TEXT'), ('pricing_options_key', 'VARCHAR(64)')):
             connection.execute(text(f'ALTER TABLE lead_jobs ADD COLUMN IF NOT EXISTS {column} {kind}'))

@@ -1541,6 +1541,9 @@ class InventoryEditItem(Base):
     mover_pack = Column(Boolean)
     # How many of this row's units the movers pack.
     mover_pack_count = Column(Integer)
+    # True for a row from the customer's list or edited by hand: a new report keeps it.
+    # False for a row from a LiveSwitch report: the next report replaces it. None: saved before this was recorded.
+    manual = Column(Boolean)
     selections = Column(Text, nullable=False, default='{}')
     sort_order = Column(Integer, nullable=False, default=0)
     inventory_record_id = Column(String(36))

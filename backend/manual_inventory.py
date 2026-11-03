@@ -309,7 +309,8 @@ def submit_inventory_snapshot(list_body, rooms, rows, cuft, weight, access, db):
     for key in CONVERSATION_KEYS:
         details[key] = ''
     details.update(last_spark_id=report_id, last_spark_status='completed', last_spark_at=int(time.time()),
-                   report_list_body=list_body, report_source='manual', manual_rooms=rooms, spark_inventory_snapshot=rows,
+                   report_list_body=list_body, report_source='manual', manual_rooms=rooms,
+                   spark_inventory_snapshot=[dict(row, manual=True) for row in rows],
                    spark_extracted_cuft=cuft, spark_extracted_weight=weight, report_files=[],
                    report_conversation={}, spark_pricing_ready=False)
     remember_report(details)
