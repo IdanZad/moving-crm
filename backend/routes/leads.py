@@ -2265,6 +2265,7 @@ class LeadPaymentPayload(BaseModel):
     amount: float = 0
     taken_by_user: str = Field(default="", alias="takenByUser")
     paid_at: date | None = Field(default=None, alias="paidAt")
+    method: str = Field(default="", max_length=30)
     rep_paid: bool = Field(default=False, alias="repPaid")
     rep_paid_at: str = Field(default="", alias="repPaidAt")
     rep_commission_percent: float | None = Field(default=None, alias="repCommissionPercent")
@@ -2416,7 +2417,15 @@ class LeadJobUpdate(BaseModel):
     notes: str | None = None
     customer_notes: str | None = None
     foreman_notes: str | None = None
+    crew_size: int | None = Field(default=None, ge=0, le=100)
+    trucks: int | None = Field(default=None, ge=0, le=50)
+    start_time: str | None = Field(default=None, max_length=20)
+    estimated_hours: float | None = Field(default=None, ge=0, le=999)
+    travel_hours: float | None = Field(default=None, ge=0, le=999)
     logs: list[ExternalLeadUpdateLog] | None = None
+
+
+WORK_ORDER_JOB_FIELDS = ("crew_size", "trucks", "start_time", "estimated_hours", "travel_hours")
 
 
 def _job_pickups_setting_key(job_id: str) -> str:
@@ -2772,8 +2781,8 @@ def update_lead_job(
     payload = body.model_dump(exclude_unset=True, by_alias=False)
     if user.role == "foreman" and set(payload) != {"foreman_notes"}:
         raise HTTPException(status_code=403, detail="Foreman users can only update foreman notes")
-    if user.role == "dispatch" and (not payload or not set(payload).issubset({"dispatch_company_id", "foreman_id", "notes", "customer_notes", "foreman_notes"})):
-        raise HTTPException(status_code=403, detail="Dispatch users can only assign a subcontractor or foreman, or update job notes")
+    if user.role == "dispatch" and (not payload or not set(payload).issubset({"dispatch_company_id", "foreman_id", "notes", "customer_notes", "foreman_notes", *WORK_ORDER_JOB_FIELDS})):
+        raise HTTPException(status_code=403, detail="Dispatch users can only assign a subcontractor or foreman, or update job notes and crew")
     lead = _get_visible_lead_or_404(lead_id, user, db)
     row = (
         db.query(LeadJob)
@@ -2830,6 +2839,11 @@ def update_lead_job(
         row.customer_notes = (payload.get("customer_notes") or "").strip() or None
     if "foreman_notes" in payload:
         row.foreman_notes = (payload.get("foreman_notes") or "").strip() or None
+    for name in WORK_ORDER_JOB_FIELDS:
+        if name in payload:
+            value = payload[name]
+            setattr(row, name, (value or "").strip() or None if name == "start_time"
+                    else Decimal(str(value)) if value is not None and name.endswith("_hours") else value)
 
     current_pickup, current_stops, current_delivery = _read_job_route(db, row)
     next_pickup = current_pickup
@@ -4130,7 +4144,8 @@ def add_lead_payment(lead_id: str, body: LeadPaymentPayload, user: User = Depend
         raise HTTPException(status_code=403, detail="Only admin and sales reps can add payments")
     lead = _get_visible_lead_or_404(lead_id, user, db)
     payment = LeadPayment(lead_id=lead.id, source="crm", sort_order=len(lead.payments),
-                          amount=Decimal(str(body.amount)), taken_by_user=body.taken_by_user.strip(), paid_at=body.paid_at)
+                          amount=Decimal(str(body.amount)), taken_by_user=body.taken_by_user.strip(), paid_at=body.paid_at,
+                          method=body.method.strip() or None)
     _check_payment(payment)
     db.add(payment)
     db.commit()
@@ -4144,7 +4159,8 @@ def update_lead_payment(lead_id: str, payment_id: str, body: LeadPaymentPayload,
     payment = _payment_or_404(lead_id, payment_id, user, db)
     sent = body.model_fields_set
     changed = lambda name, value: name in sent and getattr(body, name) != value
-    if changed("amount", float(payment.amount or 0)) or changed("taken_by_user", payment.taken_by_user) or changed("paid_at", payment.paid_at):
+    if (changed("amount", float(payment.amount or 0)) or changed("taken_by_user", payment.taken_by_user)
+            or changed("paid_at", payment.paid_at) or changed("method", payment.method or "")):
         if payment.source == "smartmoving":
             raise HTTPException(status_code=400, detail="This payment comes from SmartMoving. Change it in SmartMoving.")
         if user.role not in ("admin", "sales_rep"):

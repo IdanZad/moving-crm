@@ -210,7 +210,28 @@ def _template(output, company):
                              bottomMargin=53, title='Moving estimate', author=company.get('name') or '')
 
 
-def _summary(data, styles, p, table, link=True):
+def _access(data, location):
+    """What the crew finds at an address, from the customer's answers: stairs, elevator and walk distance."""
+    def answer(key):
+        return next((row for row in (data.get(key) or {}).get('locations', []) if row.get('location') == location), None)
+    lines = []
+    stairs = answer('stairs')
+    if stairs:
+        flights = stairs.get('flights')
+        lines.append('Stairs: ' + ('Not sure' if stairs.get('unknown') else 'Not answered' if flights is None
+                                   else 'None' if not flights else f"{flights} flight" + ('' if flights == 1 else 's')))
+    elevator = answer('elevator')
+    if elevator:
+        lines.append('Elevator: ' + ('Not sure' if elevator.get('unknown') else 'Not answered' if elevator.get('uses_elevator') is None
+                                     else 'Yes' if elevator['uses_elevator'] else 'No'))
+    carry = answer('long_carry')
+    if carry:
+        lines.append('Walk distance: ' + ('Not sure' if carry.get('unknown') else 'Not answered' if carry.get('distance_feet') is None
+                                          else f"{carry['distance_feet']} feet"))
+    return '\n'.join(lines)
+
+
+def _summary(data, styles, p, table, link=True, title='MOVING ESTIMATE', work_order=None):
     """Details, price breakdown, customer note and signature: the part that belongs on page one."""
     company = data.get('company_details') or {}
     estimate = data['estimate']
@@ -224,7 +245,7 @@ def _summary(data, styles, p, table, link=True):
     header.setStyle(TableStyle([('VALIGN', (0, 0), (-1, -1), 'TOP'), ('LEFTPADDING', (0, 0), (-1, -1), 0),
                                 ('RIGHTPADDING', (0, 0), (-1, -1), 0)]))
     story = [header,
-             Spacer(1, 12), Paragraph('MOVING ESTIMATE', styles['Title']),
+             Spacer(1, 12), Paragraph(title, styles['Title']),
              p('Prepared ' + (data.get('prepared_at') or datetime.now(timezone.utc).strftime('%B %d, %Y (UTC)')), 'NoteEstimate')]
     # Every phone and every email: the main one first, then the extras.
     def contacts(kind):
@@ -248,6 +269,20 @@ def _summary(data, styles, p, table, link=True):
     for stop in data.get('stops', []):
         if stop.get('type') not in ('pickup', 'delivery'):
             story.append(p(f"Additional stop (unspecified): {stop.get('address', '')}"))
+    if work_order:
+        # For the crew: access at each address, then the job's number, crew and schedule.
+        def hours(value):
+            return f"{float(value):g}h" if value is not None else ''
+        weight = work_order.get('weight')
+        story += [row(('PICKUP ACCESS', _access(data, 'pickup')), ('DELIVERY ACCESS', _access(data, 'delivery'))),
+                  p('Job details', 'SectionEstimate'),
+                  row(('WORK ORDER NUMBER', work_order.get('number')), ('BOOKED DATE', work_order.get('booked_date')),
+                      ('FOREMAN', work_order.get('foreman'))),
+                  row(('START TIME', work_order.get('start_time')), ('ESTIMATED JOB TIME', hours(work_order.get('estimated_hours'))),
+                      ('TRAVEL TIME', hours(work_order.get('travel_hours')))),
+                  row(('CREW', f"{work_order['crew_size']} mover" + ('' if work_order['crew_size'] == 1 else 's') if work_order.get('crew_size') else ''),
+                      ('TRUCKS', str(work_order['trucks']) if work_order.get('trucks') else ''),
+                      ('MOVE SIZE', f"{ceil(float(estimate.get('cuft') or 0))} cu ft" + (f" / {float(weight):,.0f} lbs" if weight else '')))]
     story += [p('Price breakdown', 'SectionEstimate'), p(f"Estimated shipment volume: {ceil(float(estimate.get('cuft') or 0))} cu ft")]
     package = data.get('packing_package') or {}
     minimum = package.get('minimum_cubic_feet')
@@ -325,14 +360,41 @@ def _summary_pages(data, size):
     return doc.page
 
 
-def build_estimate_pdf(data, rows):
+def _work_order_section(work_order, estimate, p, table):
+    """The work order's additions after the signed estimate: the CRM payments and the job's notes."""
+    story = [p('Payments', 'SectionEstimate')]
+    payments = work_order['payments']
+    body = [[p('DATE'), p('TAKEN BY'), p('METHOD'), p('AMOUNT', 'RightEstimate')]]
+    body += [[p(payment.get('paidAt') or 'Not set'), p(payment.get('takenByUser') or 'Not set'), p(payment.get('method') or 'Not set'),
+              p(money(payment['amount']), 'RightEstimate')]
+             for payment in payments]
+    paid = sum(Decimal(str(payment['amount'])) for payment in payments)
+    body.append([p('Total paid'), '', '', p(money(paid), 'RightEstimate')])
+    body.append([p('Balance due'), '', '', p(money(Decimal(str(estimate['price'] or 0)) - paid), 'RightEstimate')])
+    payment_table = table(body, [110, 197, 120, 95], header=True)
+    payment_table.setStyle(TableStyle([('GRID', (0, 0), (-1, -1), .4, colors.HexColor('#bdc9d0')),
+                                       ('SPAN', (0, len(body) - 2), (2, len(body) - 2)), ('SPAN', (0, len(body) - 1), (2, len(body) - 1))]))
+    story.append(payment_table)
+    for label, key in (('Internal notes', 'internal_notes'), ('Foreman notes', 'foreman_notes')):
+        story += [p(label, 'SectionEstimate'), p((work_order.get(key) or '').strip() or 'None', 'BodyEstimate')]
+    if work_order.get('valuation_per_lb') is not None:
+        story += [p('Valuation', 'SectionEstimate'),
+                  p(f"The valuation for this shipment is set at ${float(work_order['valuation_per_lb']):.2f} per lb.")]
+    return story
+
+
+def build_estimate_pdf(data, rows, work_order=None):
+    """The estimate. With work_order (its payments and notes), the work order: the same document with those added."""
     output = BytesIO()
     muted = MUTED
     size = next((size for size in FONT_SIZES if _summary_pages(data, size) == 1), FONT_SIZES[-1])
     styles, p, table = _kit(size)
     company = data.get('company_details') or {}
     package = data.get('packing_package') or {}
-    story = _summary(data, styles, p, table)
+    title = 'WORK ORDER' if work_order else 'MOVING ESTIMATE'
+    story = _summary(data, styles, p, table, title=title, work_order=work_order)
+    if work_order:
+        story += _work_order_section(work_order, data['estimate'], p, table)
     story.append(p('Declared inventory', 'SectionEstimate'))
     rooms = defaultdict(list)
     entries_all = compact_inventory_entries(inventory_entries(rows, data.get('item_questions') or [], data.get('item_services')))
@@ -429,9 +491,9 @@ def build_estimate_pdf(data, rows):
         canvas.setFont('Helvetica', 8)
         canvas.setFillColor(muted)
         if doc.page > 1:
-            canvas.drawString(45, 770, 'MOVING ESTIMATE - CONTINUED')
+            canvas.drawString(45, 770, title + ' - CONTINUED')
             canvas.drawRightString(567, 770, str(data.get('name') or '')[:70])
-        canvas.drawString(45, 26, 'Moving estimate | ' + str(data.get('move_date') or 'Date pending'))
+        canvas.drawString(45, 26, title.capitalize() + ' | ' + str(data.get('move_date') or 'Date pending'))
         canvas.drawRightString(567, 26, f'Page {doc.page}')
         canvas.restoreState()
     _template(output, company).build(story, onFirstPage=footer, onLaterPages=footer)

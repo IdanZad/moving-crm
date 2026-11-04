@@ -70,6 +70,11 @@ type LeadJobItem = {
   notes: string;
   customer_notes: string;
   foreman_notes: string;
+  crew_size: number | null;
+  trucks: number | null;
+  start_time: string;
+  estimated_hours: number | null;
+  travel_hours: number | null;
   estimated_materials: LeadJobMaterialItem[];
   pickup_zip: string;
   delivery_zip: string;
@@ -181,24 +186,32 @@ function RepCommissionEditor({
   );
 }
 
-type PaymentDraft = { index: number; amount: string; takenByUser: string; paidAt: string };
+type PaymentDraft = { index: number; amount: string; takenByUser: string; paidAt: string; method: string };
+
+const PAYMENT_METHODS = ["Credit card", "Cash", "Check", "Zelle", "Bank transfer", "Other"];
 
 function PaymentForm({ draft, saving, onChange, onCancel, onSave }: {
   draft: PaymentDraft;
   saving: boolean;
   onChange: (draft: PaymentDraft) => void;
   onCancel: () => void;
-  onSave: (amount: number, takenByUser: string, paidAt: string) => void;
+  onSave: (amount: number, takenByUser: string, paidAt: string, method: string) => void;
 }) {
   const amount = Number(draft.amount);
   const invalid = draft.amount.trim() === "" || !Number.isFinite(amount) || amount < 0 || !draft.paidAt;
   return (
-    <form className="lead-payment-form" onSubmit={(event) => { event.preventDefault(); if (!invalid) onSave(amount, draft.takenByUser.trim(), draft.paidAt); }}>
+    <form className="lead-payment-form" onSubmit={(event) => { event.preventDefault(); if (!invalid) onSave(amount, draft.takenByUser.trim(), draft.paidAt, draft.method); }}>
       <div className="lead-payment-form-rep">Taken by
         <strong>{draft.takenByUser || "No rep assigned"}</strong>
       </div>
       <label>Date
         <input type="date" value={draft.paidAt} onChange={(event) => onChange({ ...draft, paidAt: event.target.value })} />
+      </label>
+      <label>Method
+        <select value={draft.method} onChange={(event) => onChange({ ...draft, method: event.target.value })}>
+          <option value="">Not set</option>
+          {[...new Set([...PAYMENT_METHODS, ...(draft.method ? [draft.method] : [])])].map((method) => <option key={method} value={method}>{method}</option>)}
+        </select>
       </label>
       <label>Amount
         <input type="number" min={0} step="0.01" value={draft.amount} placeholder="0.00" autoFocus onChange={(event) => onChange({ ...draft, amount: event.target.value })} />
@@ -297,6 +310,8 @@ type LeadJobDraft = {
   customer_notes: string;
   foreman_notes: string;
 };
+
+type CrewDraft = { crew_size: string; trucks: string; start_time: string; estimated_hours: string; travel_hours: string };
 
 type ForemanOption = { id: string; name: string; companies?: Array<{ id: string; name: string }> };
 
@@ -465,6 +480,8 @@ export default function LeadDetail() {
   const [addingJob, setAddingJob] = useState(false);
   const [savingJobId, setSavingJobId] = useState("");
   const [savingNoteJobId, setSavingNoteJobId] = useState("");
+  const [crewDrafts, setCrewDrafts] = useState<Record<string, CrewDraft>>({});
+  const [savingCrewJobId, setSavingCrewJobId] = useState("");
   const [deletingJobId, setDeletingJobId] = useState("");
   const [activeJobTabId, setActiveJobTabId] = useState("");
   const [noteTabByJob, setNoteTabByJob] = useState<Record<string, "customer_notes" | "notes" | "foreman_notes">>({});
@@ -676,6 +693,11 @@ export default function LeadDetail() {
         notes: String(item.notes || ""),
         customer_notes: String(item.customer_notes || ""),
         foreman_notes: String(item.foreman_notes || ""),
+        crew_size: item.crew_size == null ? null : Number(item.crew_size),
+        trucks: item.trucks == null ? null : Number(item.trucks),
+        start_time: String(item.start_time || ""),
+        estimated_hours: item.estimated_hours == null ? null : Number(item.estimated_hours),
+        travel_hours: item.travel_hours == null ? null : Number(item.travel_hours),
         estimated_materials: Array.isArray(item.estimated_materials)
           ? item.estimated_materials.map((material) => {
               const row = material as Record<string, unknown>;
@@ -713,6 +735,7 @@ export default function LeadDetail() {
       }));
       setLeadJobs(parsed);
       setJobDrafts(Object.fromEntries(parsed.map((item) => [item.id, draftFromJob(item)])));
+      setCrewDrafts(Object.fromEntries(parsed.map((item) => [item.id, crewDraftFromJob(item)])));
       setNewJobDraft((prev) => ({ ...prev, company_id: prev.company_id || String(lead?.company_id || "") }));
     } catch (err: unknown) {
       setJobsErrorFromReason(err, "Failed to load jobs");
@@ -1258,6 +1281,7 @@ export default function LeadDetail() {
           amount,
           takenByUser: String(item.takenByUser ?? "").trim(),
           paidAt: String(item.paidAt ?? ""),
+          method: String(item.method ?? ""),
           repPaid: Boolean(item.repPaid ?? false),
           repPaidAt: String(item.repPaidAt ?? "").trim(),
           repCommissionPercent: item.repCommissionPercent == null ? null : Number(item.repCommissionPercent),
@@ -1270,6 +1294,7 @@ export default function LeadDetail() {
         amount: number;
         takenByUser: string;
         paidAt: string;
+        method: string;
         repPaid: boolean;
         repPaidAt: string;
         repCommissionPercent: number | null;
@@ -1411,14 +1436,14 @@ export default function LeadDetail() {
     }
   }
 
-  async function addPayment(amount: number, takenByUser: string, paidAt: string) {
+  async function addPayment(amount: number, takenByUser: string, paidAt: string, method: string) {
     if (!leadId) return false;
     setSavingRepPaymentIndex(paymentsData.length);
     try {
       const res = await fetch(`${API_BASE}/api/leads/${leadId}/payments`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...authHeaders(token) },
-        body: JSON.stringify({ amount, takenByUser, paidAt }),
+        body: JSON.stringify({ amount, takenByUser, paidAt, method }),
       });
       const saved = await res.json().catch(() => null);
       if (!res.ok) throw new Error(saved?.detail || `HTTP ${res.status}`);
@@ -1548,6 +1573,37 @@ export default function LeadDetail() {
       setJobsErrorFromReason(reason, "Failed to save subcontractor");
     } finally {
       setSavingJobId("");
+    }
+  }
+
+  function crewDraftFromJob(item: LeadJobItem): CrewDraft {
+    const text = (value: number | null) => value == null ? "" : String(value);
+    return { crew_size: text(item.crew_size), trucks: text(item.trucks), start_time: item.start_time,
+      estimated_hours: text(item.estimated_hours), travel_hours: text(item.travel_hours) };
+  }
+
+  async function saveJobCrew(jobId: string) {
+    const draft = crewDrafts[jobId];
+    if (!draft) return;
+    const number = (value: string) => value.trim() === "" ? null : Number(value);
+    const changes = {
+      crew_size: number(draft.crew_size), trucks: number(draft.trucks), start_time: draft.start_time.trim(),
+      estimated_hours: number(draft.estimated_hours), travel_hours: number(draft.travel_hours),
+    };
+    setSavingCrewJobId(jobId);
+    clearJobsError();
+    try {
+      const response = await fetch(`${API_BASE}/api/leads/${leadId}/jobs/${jobId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", ...authHeaders(token) },
+        body: JSON.stringify(changes),
+      });
+      if (!response.ok) await throwApiError(response, "Failed to save crew and schedule");
+      setLeadJobs((current) => current.map((job) => job.id === jobId ? { ...job, ...changes } : job));
+    } catch (reason) {
+      setJobsErrorFromReason(reason, "Failed to save crew and schedule");
+    } finally {
+      setSavingCrewJobId("");
     }
   }
 
@@ -2779,12 +2835,13 @@ export default function LeadDetail() {
                   <div key={`${payment.takenByUser}-${index}`} style={{ display: "grid", gap: 4, borderBottom: index < paymentsData.length - 1 ? "1px solid #e2e8f0" : "none", paddingBottom: 6, marginBottom: 2 }}>
                     {paymentDraft?.index === index ? (
                       <PaymentForm draft={paymentDraft} saving={savingRepPaymentIndex === index} onChange={setPaymentDraft} onCancel={() => setPaymentDraft(null)}
-                        onSave={async (amount, takenByUser, paidAt) => { if (await savePayment(index, { amount, takenByUser, paidAt })) setPaymentDraft(null); }} />
+                        onSave={async (amount, takenByUser, paidAt, method) => { if (await savePayment(index, { amount, takenByUser, paidAt, method })) setPaymentDraft(null); }} />
                     ) : (
                       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, fontSize: 12, color: "#334155" }}>
                         <span>
                           {payment.takenByUser || `Payment ${index + 1}`}
                           {payment.paidAt ? <span className="lead-payment-date">{new Date(`${payment.paidAt}T00:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}</span> : null}
+                          {payment.method ? <span className="lead-payment-date">{payment.method}</span> : null}
                           <span className={`lead-payment-source is-${payment.source === "smartmoving" ? "smartmoving" : "crm"}`}
                             title={payment.source === "smartmoving" ? "Synced from SmartMoving; change it in SmartMoving" : "Entered in the CRM; the SmartMoving sync never changes it"}>
                             {payment.source === "smartmoving" ? "SmartMoving" : "CRM"}
@@ -2792,7 +2849,7 @@ export default function LeadDetail() {
                         </span>
                         <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
                           {canEditPayments && payment.source !== "smartmoving" ? <>
-                            <button type="button" className="lead-payment-action" disabled={savingRepPaymentIndex !== null} onClick={() => setPaymentDraft({ index, amount: String(payment.amount), takenByUser: payment.takenByUser, paidAt: payment.paidAt })}>Edit</button>
+                            <button type="button" className="lead-payment-action" disabled={savingRepPaymentIndex !== null} onClick={() => setPaymentDraft({ index, amount: String(payment.amount), takenByUser: payment.takenByUser, paidAt: payment.paidAt, method: payment.method })}>Edit</button>
                             <button type="button" className="lead-payment-action" disabled={savingRepPaymentIndex !== null} onClick={() => void deletePayment(index)}>Delete</button>
                           </> : null}
                           <strong>{formatMoney(payment.amount)}</strong>
@@ -2863,10 +2920,10 @@ export default function LeadDetail() {
                 ) : null}
                 {canEditPayments ? (paymentDraft?.index === -1 ? (
                   <PaymentForm draft={paymentDraft} saving={savingRepPaymentIndex === paymentsData.length} onChange={setPaymentDraft} onCancel={() => setPaymentDraft(null)}
-                    onSave={async (amount, takenByUser, paidAt) => { if (await addPayment(amount, takenByUser, paidAt)) setPaymentDraft(null); }} />
+                    onSave={async (amount, takenByUser, paidAt, method) => { if (await addPayment(amount, takenByUser, paidAt, method)) setPaymentDraft(null); }} />
                 ) : (
                   <button type="button" className="lead-payment-action" style={{ justifySelf: "start" }} disabled={savingRepPaymentIndex !== null}
-                    onClick={() => setPaymentDraft({ index: -1, amount: "", takenByUser: String(lead.assigned_to_name || ""), paidAt: new Date().toLocaleDateString("en-CA") })}>+ Add payment</button>
+                    onClick={() => setPaymentDraft({ index: -1, amount: "", takenByUser: String(lead.assigned_to_name || ""), paidAt: new Date().toLocaleDateString("en-CA"), method: "" })}>+ Add payment</button>
                 )) : null}
                 <div style={{ borderTop: "1px solid #dbe4ef", marginTop: 2, paddingTop: 8, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, fontSize: 12, color: "#0f172a" }}>
                   <span style={{ fontWeight: 700 }}>Total Payments</span>
@@ -3336,6 +3393,34 @@ export default function LeadDetail() {
                         <button className="slds-button" type="button" onClick={() => void saveJobNotes(job.id, "foreman_notes")} disabled={savingNoteJobId === job.id}>Save Foreman Notes</button>
                       </div>
                     </section>
+
+                    {crewDrafts[job.id] ? (
+                      <section className="lead-notes-card lead-crew-card" aria-label={`Job ${job.job_order} crew and schedule`}>
+                        <div className="lead-notes-card__header">
+                          <div><strong>{`Job ${job.job_order} Crew & Schedule`}</strong></div>
+                          <small>Shown on the work order</small>
+                        </div>
+                        <div className="lead-crew-fields">
+                          {([
+                            ["crew_size", "Movers", "number", "1"],
+                            ["trucks", "Trucks", "number", "1"],
+                            ["start_time", "Start time", "time", undefined],
+                            ["estimated_hours", "Job time (hours)", "number", "0.25"],
+                            ["travel_hours", "Travel time (hours)", "number", "0.25"],
+                          ] as const).map(([field, label, type, step]) => (
+                            <label key={field}>{label}
+                              <input type={type} min={type === "number" ? 0 : undefined} step={step} value={crewDrafts[job.id][field]} disabled={isForemanUser}
+                                onChange={(event) => setCrewDrafts((prev) => ({ ...prev, [job.id]: { ...prev[job.id], [field]: event.target.value } }))} />
+                            </label>
+                          ))}
+                        </div>
+                        {!isForemanUser ? (
+                          <div className="lead-notes-card__actions">
+                            <button className="slds-button" type="button" onClick={() => void saveJobCrew(job.id)} disabled={savingCrewJobId === job.id}>{savingCrewJobId === job.id ? "Saving..." : "Save Crew & Schedule"}</button>
+                          </div>
+                        ) : null}
+                      </section>
+                    ) : null}
 
                     {canEditJobs ? (
                       <div style={{ marginTop: 8, display: "flex", gap: 8 }}>

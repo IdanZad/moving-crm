@@ -66,6 +66,8 @@ class Company(Base):
     phone = Column(String(30))
     office_address = Column(Text, nullable=False, default="", server_default="")
     dot_number = Column(String(30), nullable=False, default="", server_default="")
+    # The shipment's valuation, per lb, printed on work orders.
+    valuation_per_lb = Column(Numeric(6, 2))
     # Customer emails (e.g. portal codes) are sent from this address via SES; its domain must be verified in SES.
     sender_email = Column(String(255))
     facebook_page_id = Column(String(100), unique=True, index=True)
@@ -91,6 +93,7 @@ class Company(Base):
             "phone": self.phone or "",
             "office_address": self.office_address or "",
             "dot_number": self.dot_number or "",
+            "valuation_per_lb": float(self.valuation_per_lb) if self.valuation_per_lb is not None else None,
             "sender_email": self.sender_email or "",
             "facebook_page_id": self.facebook_page_id or "",
             "aircall_number_id": self.aircall_number_id or "",
@@ -558,6 +561,12 @@ class LeadJob(Base):
     notes = Column(Text)
     customer_notes = Column(Text)
     foreman_notes = Column(Text)
+    # Crew and schedule for the work order.
+    crew_size = Column(Integer)
+    trucks = Column(Integer)
+    start_time = Column(String(20))
+    estimated_hours = Column(Numeric(5, 2))
+    travel_hours = Column(Numeric(5, 2))
     estimated_materials = Column(Text)
     customer_packing = Column(Text)
     customer_packing_package = Column(Text)
@@ -596,6 +605,11 @@ class LeadJob(Base):
             "notes": self.notes or "",
             "customer_notes": self.customer_notes or "",
             "foreman_notes": self.foreman_notes or "",
+            "crew_size": self.crew_size,
+            "trucks": self.trucks,
+            "start_time": self.start_time or "",
+            "estimated_hours": float(self.estimated_hours) if self.estimated_hours is not None else None,
+            "travel_hours": float(self.travel_hours) if self.travel_hours is not None else None,
             "estimated_materials": self._estimated_materials_data(),
             "company_id": self.company_id,
             "company_name": self.company.name if self.company else "",
@@ -645,6 +659,7 @@ class LeadPayment(Base):
     amount = Column(Numeric(12, 2), nullable=False, default=0)
     taken_by_user = Column(String(255), nullable=False, default="")
     paid_at = Column(Date)  # the day the payment was made
+    method = Column(String(30))  # how it was paid, e.g. Credit card
     rep_paid = Column(Boolean, nullable=False, default=False)
     rep_paid_at = Column(String(40), nullable=False, default="")
     rep_commission_percent = Column(Numeric(6, 2))
@@ -657,6 +672,7 @@ class LeadPayment(Base):
             "amount": float(self.amount or 0),
             "takenByUser": self.taken_by_user or "",
             "paidAt": self.paid_at.isoformat() if self.paid_at else "",
+            "method": self.method or "",
             "repPaid": bool(self.rep_paid),
             "repPaidAt": self.rep_paid_at or "",
             "repCommissionPercent": float(self.rep_commission_percent) if self.rep_commission_percent is not None else None,

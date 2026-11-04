@@ -150,6 +150,11 @@ def migrate() -> None:
         payments_table_existed = inspect_schema(connection).has_table('lead_payments')
         LeadPayment.__table__.create(connection, checkfirst=True)
         connection.execute(text('ALTER TABLE lead_payments ADD COLUMN IF NOT EXISTS paid_at DATE'))
+        connection.execute(text('ALTER TABLE lead_payments ADD COLUMN IF NOT EXISTS method VARCHAR(30)'))
+        for column, kind in (('crew_size', 'INTEGER'), ('trucks', 'INTEGER'), ('start_time', 'VARCHAR(20)'),
+                             ('estimated_hours', 'NUMERIC(5, 2)'), ('travel_hours', 'NUMERIC(5, 2)')):
+            connection.execute(text(f'ALTER TABLE lead_jobs ADD COLUMN IF NOT EXISTS {column} {kind}'))
+        connection.execute(text('ALTER TABLE companies ADD COLUMN IF NOT EXISTS valuation_per_lb NUMERIC(6, 2)'))
         for column, kind in (('third_party_payout_to', 'VARCHAR(255)'), ('third_party_payout_amount', 'NUMERIC(12, 2)'),
                              ('third_party_payout_paid', 'BOOLEAN'), ('third_party_payout_paid_at', 'VARCHAR(40)')):
             connection.execute(text(f'ALTER TABLE leads ADD COLUMN IF NOT EXISTS {column} {kind}'))

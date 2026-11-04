@@ -32,7 +32,7 @@ from config import get_config
 from company_colors import resolve_company_color
 from database import get_db
 from libs.aircall.client import find_number_id, send_sms
-from models import Lead, LeadJob, Company, User, LeadAttachment, LeadLiveSwitch, PublicMoveAccess, PublicMoveSession, PublicMoveRepVerification, PublicMoveUpload, PublicMoveRate, PublicMovePendingUpload, WalkthroughRequest
+from models import Lead, LeadJob, Company, User, LeadAttachment, LeadLiveSwitch, PublicMoveAccess, PublicMoveSession, PublicMoveRepVerification, PublicMoveUpload, PublicMoveRate, PublicMovePendingUpload, WalkthroughRequest, LeadPayment, EstimateSignature
 from public_move_security import digest, secret_digest, link_token, contact_fingerprint, normalize_phone, file_type
 from public_move_sync import queue_files, sync_status
 from routes.leads import LeadContactInput, save_lead_contacts, _get_visible_lead_or_404, _get_user_company_ids, _persist_job_route, _read_job_route, _upload_attachment_bytes_to_s3, _delete_s3_url, _safe_attachment_name
@@ -884,9 +884,12 @@ def _move_details(access, db, *, refresh_report=True, include_pricing=True, pric
         db, access.lead_id, access.job_id, estimate_data, None, inventory_pending=estimate_needs_update)
     pricing_data['estimate_needs_update'] = estimate_needs_update
     pricing_data['signature_requires_resign'] = pricing_data['signature_status'] == 'changed'
+    # Rep pages show every price line (individual_charges), and only they get the work order.
+    pricing_data['work_order_available'] = bool(individual_charges and pricing_data['signature_status'] == 'signed' and db.query(
+        LeadPayment.id).filter(LeadPayment.lead_id == lead.id, LeadPayment.source == 'crm').first())
     if pricing_only:
         return pricing_data
-    return {'signature_status': pricing_data['signature_status'], 'estimate_needs_update': pricing_data['estimate_needs_update'], 'signature_requires_resign': pricing_data['signature_requires_resign'], 'pricing_error': pricing_error, 'extra_stops': extra_stops, 'elevator': elevator, 'long_carry': long_carry, 'stairs': stairs, 'storage': storage, 'shuttle': shuttle, 'google_maps_browser_key': setting('GOOGLE_MAPS_BROWSER_KEY'), 'item_questions': item_questions, 'packing_package': packing_package, 'packing_items': packing_items, 'packing_saved': job.customer_packing is not None, 'name': lead.full_name, 'phone': lead.phone or '', 'email': lead.email or '', 'contacts': [row.to_dict() for row in lead.contacts], 'move_date': job.move_date or '',
+    return {'signature_status': pricing_data['signature_status'], 'work_order_available': pricing_data['work_order_available'], 'estimate_needs_update': pricing_data['estimate_needs_update'], 'signature_requires_resign': pricing_data['signature_requires_resign'], 'pricing_error': pricing_error, 'extra_stops': extra_stops, 'elevator': elevator, 'long_carry': long_carry, 'stairs': stairs, 'storage': storage, 'shuttle': shuttle, 'google_maps_browser_key': setting('GOOGLE_MAPS_BROWSER_KEY'), 'item_questions': item_questions, 'packing_package': packing_package, 'packing_items': packing_items, 'packing_saved': job.customer_packing is not None, 'name': lead.full_name, 'phone': lead.phone or '', 'email': lead.email or '', 'contacts': [row.to_dict() for row in lead.contacts], 'move_date': job.move_date or '',
             'pickup': pickup, 'delivery': delivery, 'stops': _typed_stops(job, stops),
             'unanswered_questions': required_questions,
             'pricing_required': pricing_required,
@@ -1128,6 +1131,36 @@ def sign_estimate(signature_id: str, body: EstimateSigningInput, access: PublicM
     record.signature = json.dumps(signature)
     db.commit()
     return {'id': record.id, 'signed_at': signed_at.isoformat() + 'Z'}
+
+
+@router.get('/api/public-moves/{access_id}/work-order.pdf')
+def work_order_pdf(access: PublicMoveAccess = Depends(verified), db: Session = Depends(get_db), request: Request = None):
+    """For reps: the signed estimate as signed, with the CRM payments and the job's internal and foreman notes as they are now."""
+    from estimate_pdf import build_estimate_pdf
+    if not is_rep_request(access, request):
+        raise HTTPException(403, 'The work order is available to your moving team only.')
+    record = db.query(EstimateSignature).filter(
+        EstimateSignature.lead_id == access.lead_id, EstimateSignature.job_id == access.job_id,
+        EstimateSignature.signed_at.isnot(None)).order_by(EstimateSignature.signed_at.desc()).first()
+    payments = db.query(LeadPayment).filter(LeadPayment.lead_id == access.lead_id, LeadPayment.source == 'crm').order_by(LeadPayment.sort_order).all()
+    if not record or not payments:
+        raise HTTPException(409, 'The work order is ready once the estimate is signed and a payment is entered in the CRM.')
+    job = db.get(LeadJob, access.job_id)
+    lead = db.get(Lead, access.lead_id)
+    company = db.get(Company, job.company_id or lead.company_id) if (job.company_id or lead.company_id) else None
+    snapshot = json.loads(record.snapshot)
+    data = dict(snapshot['data'], signature=json.loads(record.signature))
+    pdf = build_estimate_pdf(data, snapshot['rows'], work_order={
+        'payments': [payment.to_dict() for payment in payments], 'internal_notes': job.notes, 'foreman_notes': job.foreman_notes,
+        'number': f"{lead.quote_number}-{job.job_order}" if lead.quote_number else str(job.job_order),
+        'booked_date': job.booked_move_date.isoformat() if job.booked_move_date else '',
+        'foreman': job.foreman.name if job.foreman else '', 'weight': lead.weight,
+        'crew_size': job.crew_size, 'trucks': job.trucks, 'start_time': job.start_time,
+        'estimated_hours': job.estimated_hours, 'travel_hours': job.travel_hours,
+        'valuation_per_lb': company.valuation_per_lb if company else None})
+    return Response(pdf, media_type='application/pdf', headers={
+        'Content-Disposition': 'inline; filename="work-order-' + record.id + '.pdf"',
+        'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff'})
 
 
 @router.post('/api/public-moves/{access_id}/estimate-signatures/{signature_id}/resign')

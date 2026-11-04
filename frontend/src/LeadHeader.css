@@ -459,7 +459,7 @@
 
 .lead-payment-form {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 150px 120px;
+  grid-template-columns: minmax(0, 1fr) 140px 130px 110px;
   gap: 8px;
   padding: 8px;
   border: 1px solid #d8dde6;
@@ -474,7 +474,8 @@
   font-size: 11px;
 }
 
-.lead-payment-form input {
+.lead-payment-form input,
+.lead-payment-form select {
   box-sizing: border-box;
   width: 100%;
   padding: 6px 8px;
@@ -524,4 +525,29 @@
 .lead-payment-form-buttons button:disabled {
   opacity: 0.6;
   cursor: default;
+}
+
+/* Job crew and schedule (shown on the work order). */
+.lead-crew-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 8px;
+  padding: 8px 12px;
+}
+
+.lead-crew-fields label {
+  display: grid;
+  gap: 3px;
+  color: #52667e;
+  font-size: 11px;
+}
+
+.lead-crew-fields input {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid #b8c9db;
+  border-radius: 6px;
+  color: #16325c;
+  font-size: 13px;
 }

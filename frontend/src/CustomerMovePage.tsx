@@ -59,6 +59,8 @@ type Details = {
   combined_inventory?: {name:string;room?:string;amount?:number;quantity?:number;cuft?:number;unit_cuft?:number;reference_name?:string}[];
   report_history?: ReportRun[];
   signature_status?: 'unsigned' | 'signed' | 'changed';
+  // Rep pages only: the estimate is signed and a payment is entered in the CRM.
+  work_order_available?: boolean;
   signature_requires_resign?: boolean;
   estimate_needs_update?: boolean;
   new_file_count?: number;
@@ -585,6 +587,25 @@ export default function CustomerMovePage() {
   const [preparedApproved, setPreparedApproved] = useState(false);
   const [estimateViewerOpen, setEstimateViewerOpen] = useState(false);
   const [inventoryPdf, setInventoryPdf] = useState<{ url: string; filename: string } | null>(null);
+  const [workOrderBusy, setWorkOrderBusy] = useState(false);
+  // The work order is built when opened, so it has the payments and notes as they are now.
+  async function openWorkOrder() {
+    setPdfError('');
+    setWorkOrderBusy(true);
+    try {
+      const response = await fetch(base + '/work-order.pdf', { headers, cache: 'no-store' });
+      if (!response.ok) {
+        const result = await response.json().catch(() => ({}));
+        throw new Error(typeof result.detail === 'string' ? result.detail : 'Could not open the work order. Please try again.');
+      }
+      const filename = ['Work order', (data?.name || '').replace(/[<>:"/\\|?*\u0000-\u001f\u007f]/g, '').trim()].filter(Boolean).join(' - ') + '.pdf';
+      setInventoryPdf({ url: URL.createObjectURL(await response.blob()), filename });
+    } catch (error) {
+      setPdfError((error as Error).message);
+    } finally {
+      setWorkOrderBusy(false);
+    }
+  }
   const [estimatePdfUrl, setEstimatePdfUrl] = useState('');
   async function openEstimate() {
     setPdfError('');
@@ -1329,6 +1350,7 @@ export default function CustomerMovePage() {
               </ol>;
               })()}
               {data.signature_status === 'signed' && <small className="cm-estimate-button-status" role="status">Signed - current estimate</small>}
+              {repPage && data.signature_status === 'signed' && data.work_order_available && <button type="button" className="cm-secondary-btn" disabled={workOrderBusy} onClick={() => void openWorkOrder()}>{workOrderBusy ? 'Preparing work order...' : 'Work order'}</button>}
               {data.spark && data.spark.status !== 'completed' && <p role="status">{data.spark.status === 'running' ? 'Analyzing your inventory...' : data.spark.status === 'failed' ? 'Inventory report failed.' : 'Inventory report queued.'}</p>}
               {pdfError && <p ref={pdfMessage} className="cm-field-error" role="alert">{pdfError}</p>}
               {data.estimate?.charges && data.estimate.charges.length > 0 && (
