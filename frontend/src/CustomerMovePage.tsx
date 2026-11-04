@@ -666,7 +666,7 @@ export default function CustomerMovePage() {
   async function refreshReportHistory() {
     try {
       const [next, history] = await Promise.all([call('/sections/pricing'), call('/sections/inventory')]);
-      setData(previous => previous ? {...previous, report_history: history.report_history, signature_status: next.signature_status, signature_requires_resign: next.signature_requires_resign} : previous);
+      setData(previous => previous ? {...previous, report_history: history.report_history, signature_status: next.signature_status, signature_requires_resign: next.signature_requires_resign, work_order_available: next.work_order_available} : previous);
     } catch { /* The history refreshes with the next page load. */ }
   }
   async function call(path:string, body?:unknown, method?:string) {
