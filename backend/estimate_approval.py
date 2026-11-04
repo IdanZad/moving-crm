@@ -47,7 +47,7 @@ def _conversation_changed(session, row):
 
 @event.listens_for(Session, 'before_flush')
 def _clear_changed_approvals(session, context, instances):
-    from models import (Company, CompanyDocument, InventoryEditItem, InventoryEditRoom, Lead, LeadJob, LeadJobCharge,
+    from models import (Company, CompanyDocument, InventoryEditItem, InventoryEditRoom, Lead, LeadContact, LeadJob, LeadJobCharge,
                         LeadLiveSwitch, PublicMoveAccess, AppSetting)
     from routes.leads import JOB_DELIVERIES_SETTING_PREFIX, JOB_PICKUPS_SETTING_PREFIX, JOB_STOPS_SETTING_PREFIX
     jobs, leads, companies = set(), set(), set()
@@ -63,6 +63,8 @@ def _clear_changed_approvals(session, context, instances):
         elif isinstance(row, Lead):
             if _changed(session, row, only=_LEAD_SHOWN):
                 leads.add(row.id)
+        elif isinstance(row, LeadContact):
+            leads.add(row.lead_id)
         elif isinstance(row, LeadLiveSwitch):
             if _conversation_changed(session, row):
                 leads.add(row.lead_id)

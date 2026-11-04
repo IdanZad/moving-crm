@@ -225,8 +225,11 @@ def _summary(data, styles, p, table, link=True):
     story = [header,
              Spacer(1, 12), Paragraph('MOVING ESTIMATE', styles['Title']),
              p('Prepared ' + (data.get('prepared_at') or datetime.now(timezone.utc).strftime('%B %d, %Y (UTC)')), 'NoteEstimate')]
+    # Every phone, then every email: the main one first, then the extras.
+    contacts = [data.get('phone'), *[row['value'] for row in data.get('contacts') or [] if row['kind'] == 'phone'],
+                data.get('email'), *[row['value'] for row in data.get('contacts') or [] if row['kind'] == 'email']]
     story.append(table([[p('CUSTOMER\n' + data.get('name', '')), p('PICKUP DATE\n' + str(data.get('move_date') or 'Not scheduled'))],
-                        [p('\n'.join(filter(None, [data.get('phone'), data.get('email')]))), p(('PARTIAL ESTIMATE\n' if any(c.get('pending') for c in estimate.get('charges', [])) else 'ESTIMATED TOTAL\n') + money(estimate['price']))],
+                        [p('\n'.join(filter(None, contacts))), p(('PARTIAL ESTIMATE\n' if any(c.get('pending') for c in estimate.get('charges', [])) else 'ESTIMATED TOTAL\n') + money(estimate['price']))],
                         [p('PICKUP\n' + data.get('pickup', '')), p('DELIVERY\n' + data.get('delivery', ''))]], [261, 261]))
     for stop in data.get('stops', []):
         story.append(p(f"Additional stop ({stop.get('type') or 'unspecified'}): {stop.get('address', '')}"))

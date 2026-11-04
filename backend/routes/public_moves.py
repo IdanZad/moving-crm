@@ -800,7 +800,8 @@ def saved_estimate(access, lead, job, state, individual_charges=False):
 
 
 def _move_details(access, db, *, refresh_report=True, include_pricing=True, pricing_only=False, individual_charges=False, estimate_only=False):
-    lead, job, conversation = _load_move(access, db, charges=True, contacts=not pricing_only)
+    # Contacts always: the estimate shows them, and the signed status compares them.
+    lead, job, conversation = _load_move(access, db, charges=True, contacts=True)
     pickup, stops, delivery = _read_job_route(db, job)
     meeting = db.query(WalkthroughRequest).filter_by(job_id=job.id).order_by(WalkthroughRequest.created_at.desc()).first() if not pricing_only else None
     files = active_report_files(access, db) if not pricing_only else []
@@ -864,7 +865,9 @@ def _move_details(access, db, *, refresh_report=True, include_pricing=True, pric
     from company_documents import estimate_documents
     def estimate_data():
         """What the estimate shows: the page's data with the people, route, item services and documents."""
+        # None without extras, so copies signed before extras existed still match.
         details = dict(pricing_data, name=lead.full_name, phone=lead.phone or '', email=lead.email or '',
+            contacts=[{'kind': row.kind, 'value': row.value} for row in lead.contacts] or None,
             move_date=job.move_date or '', pickup=pickup, delivery=delivery, stops=_typed_stops(job, stops),
             company_details=company_data, item_services=inventory_selectors(access, db),
             documents=estimate_documents(lead, job, db))
