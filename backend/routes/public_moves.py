@@ -884,9 +884,8 @@ def _move_details(access, db, *, refresh_report=True, include_pricing=True, pric
         db, access.lead_id, access.job_id, estimate_data, None, inventory_pending=estimate_needs_update)
     pricing_data['estimate_needs_update'] = estimate_needs_update
     pricing_data['signature_requires_resign'] = pricing_data['signature_status'] == 'changed'
-    # Rep pages show every price line (individual_charges), and only they get the work order.
-    pricing_data['work_order_available'] = bool(individual_charges and pricing_data['signature_status'] == 'signed' and db.query(
-        LeadPayment.id).filter(LeadPayment.lead_id == lead.id, LeadPayment.source == 'crm').first())
+    # Rep pages show every price line (individual_charges), and only they get the work order, once the estimate is signed.
+    pricing_data['work_order_available'] = bool(individual_charges and pricing_data['signature_status'] == 'signed')
     if pricing_only:
         return pricing_data
     return {'signature_status': pricing_data['signature_status'], 'work_order_available': pricing_data['work_order_available'], 'estimate_needs_update': pricing_data['estimate_needs_update'], 'signature_requires_resign': pricing_data['signature_requires_resign'], 'pricing_error': pricing_error, 'extra_stops': extra_stops, 'elevator': elevator, 'long_carry': long_carry, 'stairs': stairs, 'storage': storage, 'shuttle': shuttle, 'google_maps_browser_key': setting('GOOGLE_MAPS_BROWSER_KEY'), 'item_questions': item_questions, 'packing_package': packing_package, 'packing_items': packing_items, 'packing_saved': job.customer_packing is not None, 'name': lead.full_name, 'phone': lead.phone or '', 'email': lead.email or '', 'contacts': [row.to_dict() for row in lead.contacts], 'move_date': job.move_date or '',
@@ -1108,7 +1107,7 @@ def signature_pdf(signature_id: str, access: PublicMoveAccess = Depends(verified
 
 
 @router.post('/api/public-moves/{access_id}/estimate-signatures/{signature_id}/sign')
-def sign_estimate(signature_id: str, body: EstimateSigningInput, access: PublicMoveAccess = Depends(verified), db: Session = Depends(get_db)):
+def sign_estimate(signature_id: str, body: EstimateSigningInput, access: PublicMoveAccess = Depends(verified), db: Session = Depends(get_db), request: Request = None):
     from estimate_pdf import build_estimate_pdf
     record = _signature_record(signature_id, access, db, lock=True)
     if record.signed_at:
@@ -1130,7 +1129,10 @@ def sign_estimate(signature_id: str, body: EstimateSigningInput, access: PublicM
     record.signer_name, record.signed_at = name, signed_at
     record.signature = json.dumps(signature)
     db.commit()
-    return {'id': record.id, 'signed_at': signed_at.isoformat() + 'Z'}
+    # The page shows the estimate signed from this answer, without loading its pricing again.
+    work_order = is_rep_request(access, request)
+    return {'id': record.id, 'name': name, 'signed_at': signed_at.isoformat() + 'Z', 'report_id': record.report_id,
+            'work_order_available': work_order}
 
 
 @router.get('/api/public-moves/{access_id}/work-order.pdf')
@@ -1143,8 +1145,8 @@ def work_order_pdf(access: PublicMoveAccess = Depends(verified), db: Session = D
         EstimateSignature.lead_id == access.lead_id, EstimateSignature.job_id == access.job_id,
         EstimateSignature.signed_at.isnot(None)).order_by(EstimateSignature.signed_at.desc()).first()
     payments = db.query(LeadPayment).filter(LeadPayment.lead_id == access.lead_id, LeadPayment.source == 'crm').order_by(LeadPayment.sort_order).all()
-    if not record or not payments:
-        raise HTTPException(409, 'The work order is ready once the estimate is signed and a payment is entered in the CRM.')
+    if not record:
+        raise HTTPException(409, 'The work order is ready once the estimate is signed.')
     job = db.get(LeadJob, access.job_id)
     snapshot = json.loads(record.snapshot)
     data = dict(snapshot['data'], signature=json.loads(record.signature))
@@ -1157,8 +1159,9 @@ def work_order_pdf(access: PublicMoveAccess = Depends(verified), db: Session = D
 
 
 @router.post('/api/public-moves/{access_id}/estimate-signatures/{signature_id}/resign')
-def clear_estimate_signature(signature_id: str, access: PublicMoveAccess = Depends(verified), db: Session = Depends(get_db)):
+def clear_estimate_signature(signature_id: str, access: PublicMoveAccess = Depends(verified), db: Session = Depends(get_db), request: Request = None):
     from estimate_pdf import build_estimate_pdf
+    from estimate_signature_history import estimate_signature_status
     record = _signature_record(signature_id, access, db, lock=True)
     snapshot = json.loads(record.snapshot)
     snapshot['data'].pop('signature', None)
@@ -1167,7 +1170,12 @@ def clear_estimate_signature(signature_id: str, access: PublicMoveAccess = Depen
     record.pdf = pdf
     record.signer_name = record.signed_at = record.signature = None
     db.commit()
-    return Response(pdf, media_type='application/pdf', headers={'Cache-Control': 'private, no-store'})
+    # The page updates from this answer: the signature it removed and the estimate's status now. The current
+    # estimate is built only when another signed copy is left to compare with.
+    status = estimate_signature_status(db, access.lead_id, access.job_id,
+                                       lambda: _move_details(access, db, pricing_only=True, estimate_only=True), None)
+    work_order = status == 'signed' and is_rep_request(access, request)
+    return {'removed_id': record.id, 'signature_status': status, 'work_order_available': work_order}
 
 
 @router.get('/api/public-moves/{access_id}/inventory-catalog')
