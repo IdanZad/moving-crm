@@ -181,6 +181,33 @@ function RepCommissionEditor({
   );
 }
 
+type PaymentDraft = { index: number; amount: string; takenByUser: string };
+
+function PaymentForm({ draft, saving, onChange, onCancel, onSave }: {
+  draft: PaymentDraft;
+  saving: boolean;
+  onChange: (draft: PaymentDraft) => void;
+  onCancel: () => void;
+  onSave: (amount: number, takenByUser: string) => void;
+}) {
+  const amount = Number(draft.amount);
+  const invalid = draft.amount.trim() === "" || !Number.isFinite(amount) || amount < 0;
+  return (
+    <form className="lead-payment-form" onSubmit={(event) => { event.preventDefault(); if (!invalid) onSave(amount, draft.takenByUser.trim()); }}>
+      <label>Taken by
+        <input value={draft.takenByUser} maxLength={255} placeholder="Name or email" onChange={(event) => onChange({ ...draft, takenByUser: event.target.value })} />
+      </label>
+      <label>Amount
+        <input type="number" min={0} step="0.01" value={draft.amount} placeholder="0.00" autoFocus onChange={(event) => onChange({ ...draft, amount: event.target.value })} />
+      </label>
+      <div className="lead-payment-form-buttons">
+        <button type="button" onClick={onCancel} disabled={saving}>Cancel</button>
+        <button type="submit" className="is-primary" disabled={saving || invalid}>{saving ? "Saving..." : "Save payment"}</button>
+      </div>
+    </form>
+  );
+}
+
 function ThirdPartyPayoutEditor({
   payout,
   paymentAmount,
@@ -395,6 +422,8 @@ export default function LeadDetail() {
   const [priorityError, setPriorityError] = useState("");
   const [taskRevision, setTaskRevision] = useState(0);
   const [savingRepPaymentIndex, setSavingRepPaymentIndex] = useState<number | null>(null);
+  // The payment being added (index -1) or edited.
+  const [paymentDraft, setPaymentDraft] = useState<PaymentDraft | null>(null);
   const [statusMenuOpen, setStatusMenuOpen] = useState(false);
   const [statusMenuRect, setStatusMenuRect] = useState<{ top: number; left: number; width: number; height: number } | null>(null);
   const [deletingLead, setDeletingLead] = useState(false);
@@ -1220,6 +1249,8 @@ export default function LeadDetail() {
         const amount = Number(item.amount ?? 0);
         if (!Number.isFinite(amount)) return null;
         return {
+          id: String(item.id ?? ""),
+          source: String(item.source ?? ""),
           amount,
           takenByUser: String(item.takenByUser ?? "").trim(),
           repPaid: Boolean(item.repPaid ?? false),
@@ -1233,6 +1264,8 @@ export default function LeadDetail() {
         };
       })
       .filter((row): row is {
+        id: string;
+        source: string;
         amount: number;
         takenByUser: string;
         repPaid: boolean;
@@ -1256,6 +1289,7 @@ export default function LeadDetail() {
     && String(user.id || "") === String(lead.assigned_to || "");
   const canViewRepCommission = hasRepCommission && (user?.role === "admin" || isAssignedSalesRep);
   const canManageRepPayments = hasRepCommission && user?.role === "admin";
+  const canEditPayments = user?.role === "admin" || user?.role === "sales_rep";
 
   function formatMoney(value: number): string {
     return `$${value.toFixed(2)}`;
@@ -1345,38 +1379,74 @@ export default function LeadDetail() {
     }
   }
 
-  async function setRepPaymentPaid(paymentIndex: number, nextPaid: boolean) {
-    if (!leadId || !canManageRepPayments) return;
-    if (paymentIndex < 0 || paymentIndex >= paymentsData.length) return;
-
+  // Saves one payment's changed fields and puts the saved payment back in its place.
+  async function savePayment(paymentIndex: number, changes: Record<string, unknown>) {
+    const payment = paymentsData[paymentIndex];
+    if (!leadId || !payment) return false;
     setSavingRepPaymentIndex(paymentIndex);
     try {
-      const nextPayments = paymentsData.map((payment, index) => {
-        if (index !== paymentIndex) {
-          return {
-            ...payment,
-          };
-        }
-        return {
-          ...payment,
-          repPaid: nextPaid,
-          repPaidAt: nextPaid ? (payment.repPaidAt || new Date().toISOString()) : "",
-        };
-      });
-
-      const res = await fetch(`${API_BASE}/api/leads/${leadId}`, {
+      const res = await fetch(`${API_BASE}/api/leads/${leadId}/payments/${encodeURIComponent(payment.id)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json", ...authHeaders(token) },
-        body: JSON.stringify({ payments: nextPayments }),
+        body: JSON.stringify(changes),
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const updated = await res.json();
-      setLead(updated);
+      const saved = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(saved?.detail || `HTTP ${res.status}`);
+      setLead((current) => current ? { ...current, payments: paymentsData.map((row, index) => index === paymentIndex ? saved : row) } : current);
+      return true;
     } catch (e) {
-      alert(`Failed to update rep payment: ${e instanceof Error ? e.message : "error"}`);
+      alert(`Failed to update payment: ${e instanceof Error ? e.message : "error"}`);
+      return false;
     } finally {
       setSavingRepPaymentIndex(null);
     }
+  }
+
+  async function addPayment(amount: number, takenByUser: string) {
+    if (!leadId) return false;
+    setSavingRepPaymentIndex(paymentsData.length);
+    try {
+      const res = await fetch(`${API_BASE}/api/leads/${leadId}/payments`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders(token) },
+        body: JSON.stringify({ amount, takenByUser }),
+      });
+      const saved = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(saved?.detail || `HTTP ${res.status}`);
+      setLead((current) => current ? { ...current, payments: [...paymentsData, saved] } : current);
+      return true;
+    } catch (e) {
+      alert(`Failed to add payment: ${e instanceof Error ? e.message : "error"}`);
+      return false;
+    } finally {
+      setSavingRepPaymentIndex(null);
+    }
+  }
+
+  async function deletePayment(paymentIndex: number) {
+    const payment = paymentsData[paymentIndex];
+    if (!leadId || !payment || !window.confirm(`Delete the ${formatMoney(payment.amount)} payment?`)) return;
+    setSavingRepPaymentIndex(paymentIndex);
+    try {
+      const res = await fetch(`${API_BASE}/api/leads/${leadId}/payments/${encodeURIComponent(payment.id)}`, {
+        method: "DELETE",
+        headers: authHeaders(token),
+      });
+      const body = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(body?.detail || `HTTP ${res.status}`);
+      setLead((current) => current ? { ...current, payments: paymentsData.filter((_, index) => index !== paymentIndex) } : current);
+    } catch (e) {
+      alert(`Failed to delete payment: ${e instanceof Error ? e.message : "error"}`);
+    } finally {
+      setSavingRepPaymentIndex(null);
+    }
+  }
+
+  async function setRepPaymentPaid(paymentIndex: number, nextPaid: boolean) {
+    if (!canManageRepPayments) return;
+    const payment = paymentsData[paymentIndex];
+    if (!payment) return;
+    await savePayment(paymentIndex, { repPaid: nextPaid, repPaidAt: nextPaid ? (payment.repPaidAt || new Date().toISOString()) : "" });
   }
 
   async function downloadAttachments(attachmentIds?: string[]) {
@@ -1415,27 +1485,8 @@ export default function LeadDetail() {
   }
 
   async function updateRepCommissionOverride(paymentIndex: number, percent: number | null, amount: number | null) {
-    if (!leadId || !canManageRepPayments || paymentIndex < 0 || paymentIndex >= paymentsData.length) return;
-    const nextPayments = paymentsData.map((payment, index) => index === paymentIndex ? {
-      ...payment,
-      repCommissionPercent: percent,
-      repCommissionAmount: amount,
-    } : payment);
-    setSavingRepPaymentIndex(paymentIndex);
-    try {
-      const response = await fetch(`${API_BASE}/api/leads/${leadId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json", ...authHeaders(token) },
-        body: JSON.stringify({ payments: nextPayments }),
-      });
-      const body = await response.json().catch(() => null);
-      if (!response.ok) throw new Error(body?.detail || `HTTP ${response.status}`);
-      setLead(body);
-    } catch (reason) {
-      alert(`Failed to update rep commission: ${reason instanceof Error ? reason.message : "error"}`);
-    } finally {
-      setSavingRepPaymentIndex(null);
-    }
+    if (!canManageRepPayments) return;
+    await savePayment(paymentIndex, { repCommissionPercent: percent, repCommissionAmount: amount });
   }
 
   async function moveAttachmentToJob(attachmentId: string, targetJobId: string) {
@@ -1567,25 +1618,8 @@ export default function LeadDetail() {
       thirdPartyCommissionPaidAt: string;
     }>,
   ) {
-    if (!leadId || user?.role !== "admin") return;
-    const nextPayments = paymentsData.map((payment, index) => (
-      index === paymentIndex ? { ...payment, ...changes } : payment
-    ));
-    setSavingRepPaymentIndex(paymentIndex);
-    try {
-      const res = await fetch(`${API_BASE}/api/leads/${leadId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json", ...authHeaders(token) },
-        body: JSON.stringify({ payments: nextPayments }),
-      });
-      const responseBody = await res.json().catch(() => null);
-      if (!res.ok) throw new Error(responseBody?.detail || `HTTP ${res.status}`);
-      setLead(responseBody);
-    } catch (e) {
-      alert(`Failed to update third-party payout: ${e instanceof Error ? e.message : "error"}`);
-    } finally {
-      setSavingRepPaymentIndex(null);
-    }
+    if (user?.role !== "admin") return;
+    await savePayment(paymentIndex, changes);
   }
 
   async function copyLead() {
@@ -2720,7 +2754,7 @@ export default function LeadDetail() {
               </div>
             </div>
           ) : null}
-          {paymentsData.length > 0 ? (
+          {paymentsData.length > 0 || canEditPayments ? (
             <div style={{ border: "1px solid #d8dde6", borderRadius: 8, background: "#f8fafc", overflow: "hidden" }}>
               <div style={{ padding: "8px 10px", borderBottom: "1px solid #e2e8f0", fontSize: 12, fontWeight: 700, color: "#0f172a", letterSpacing: "0.02em" }}>
                 Payments
@@ -2728,10 +2762,27 @@ export default function LeadDetail() {
               <div style={{ padding: 10, display: "grid", gap: 6 }}>
                 {paymentsData.map((payment, index) => (
                   <div key={`${payment.takenByUser}-${index}`} style={{ display: "grid", gap: 4, borderBottom: index < paymentsData.length - 1 ? "1px solid #e2e8f0" : "none", paddingBottom: 6, marginBottom: 2 }}>
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, fontSize: 12, color: "#334155" }}>
-                      <span>{payment.takenByUser || `Payment ${index + 1}`}</span>
-                      <strong>{formatMoney(payment.amount)}</strong>
-                    </div>
+                    {paymentDraft?.index === index ? (
+                      <PaymentForm draft={paymentDraft} saving={savingRepPaymentIndex === index} onChange={setPaymentDraft} onCancel={() => setPaymentDraft(null)}
+                        onSave={async (amount, takenByUser) => { if (await savePayment(index, { amount, takenByUser })) setPaymentDraft(null); }} />
+                    ) : (
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, fontSize: 12, color: "#334155" }}>
+                        <span>
+                          {payment.takenByUser || `Payment ${index + 1}`}
+                          <span className={`lead-payment-source is-${payment.source === "smartmoving" ? "smartmoving" : "crm"}`}
+                            title={payment.source === "smartmoving" ? "Synced from SmartMoving; change it in SmartMoving" : "Entered in the CRM; the SmartMoving sync never changes it"}>
+                            {payment.source === "smartmoving" ? "SmartMoving" : "CRM"}
+                          </span>
+                        </span>
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                          {canEditPayments && payment.source !== "smartmoving" ? <>
+                            <button type="button" className="lead-payment-action" disabled={savingRepPaymentIndex !== null} onClick={() => setPaymentDraft({ index, amount: String(payment.amount), takenByUser: payment.takenByUser })}>Edit</button>
+                            <button type="button" className="lead-payment-action" disabled={savingRepPaymentIndex !== null} onClick={() => void deletePayment(index)}>Delete</button>
+                          </> : null}
+                          <strong>{formatMoney(payment.amount)}</strong>
+                        </span>
+                      </div>
+                    )}
                     {canViewRepCommission ? <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, fontSize: 11 }}>
                       <span style={{ color: "#475569" }}>
                         Rep paid ({repPaidCommissionRatePercent(payment.repCommissionPercent).toFixed(6)}%
@@ -2796,6 +2847,13 @@ export default function LeadDetail() {
                     ) : null}
                   </div>
                 ))}
+                {canEditPayments ? (paymentDraft?.index === -1 ? (
+                  <PaymentForm draft={paymentDraft} saving={savingRepPaymentIndex === paymentsData.length} onChange={setPaymentDraft} onCancel={() => setPaymentDraft(null)}
+                    onSave={async (amount, takenByUser) => { if (await addPayment(amount, takenByUser)) setPaymentDraft(null); }} />
+                ) : (
+                  <button type="button" className="lead-payment-action" style={{ justifySelf: "start" }} disabled={savingRepPaymentIndex !== null}
+                    onClick={() => setPaymentDraft({ index: -1, amount: "", takenByUser: "" })}>+ Add payment</button>
+                )) : null}
                 <div style={{ borderTop: "1px solid #dbe4ef", marginTop: 2, paddingTop: 8, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, fontSize: 12, color: "#0f172a" }}>
                   <span style={{ fontWeight: 700 }}>Total Payments</span>
                   <strong>{formatMoney(paymentsTotal)}</strong>

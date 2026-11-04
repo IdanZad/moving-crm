@@ -145,6 +145,38 @@ def migrate() -> None:
         connection.execute(text('ALTER TABLE lead_job_charges ADD COLUMN IF NOT EXISTS source VARCHAR(20)'))
         from models import LeadContact
         LeadContact.__table__.create(connection, checkfirst=True)
+        from models import LeadPayment
+        from sqlalchemy import inspect as inspect_schema
+        payments_table_existed = inspect_schema(connection).has_table('lead_payments')
+        LeadPayment.__table__.create(connection, checkfirst=True)
+        # Payments were a JSON list on the lead, all synced from SmartMoving. They move to their own rows once,
+        # when the table is created; the old list is left as it was until it is dropped.
+        if not payments_table_existed and connection.execute(text(
+                "SELECT 1 FROM information_schema.columns WHERE table_name = 'leads' AND column_name = 'payments'")).first():
+            import json
+            import uuid
+            def number(value, default=0):
+                try:
+                    return float(value) if value is not None else default
+                except (TypeError, ValueError):
+                    return default
+            for lead_id, raw in connection.execute(text("SELECT id, payments FROM leads WHERE payments IS NOT NULL AND payments <> ''")).all():
+                try:
+                    items = json.loads(raw)
+                except ValueError:
+                    items = []
+                rows = [dict(id=str(uuid.uuid4()), lead_id=lead_id, source='smartmoving', sort_order=index,
+                             amount=number(item.get('amount')), taken_by_user=str(item.get('takenByUser') or '').strip(),
+                             rep_paid=bool(item.get('repPaid')), rep_paid_at=str(item.get('repPaidAt') or '').strip(),
+                             rep_commission_percent=number(item.get('repCommissionPercent'), None),
+                             rep_commission_amount=number(item.get('repCommissionAmount'), None),
+                             third_party_commission_to=str(item.get('thirdPartyCommissionTo') or '').strip(),
+                             third_party_commission_amount=number(item.get('thirdPartyCommissionAmount')),
+                             third_party_commission_paid=bool(item.get('thirdPartyCommissionPaid')),
+                             third_party_commission_paid_at=str(item.get('thirdPartyCommissionPaidAt') or '').strip())
+                        for index, item in enumerate(items if isinstance(items, list) else []) if isinstance(item, dict)]
+                if rows:
+                    connection.execute(LeadPayment.__table__.insert(), rows)
         # The list lives in the inventory tables; the old JSON draft copy is no longer read or written.
         connection.execute(text("""UPDATE lead_liveswitch SET details = (details::jsonb - 'inventory_draft')::text
                                    WHERE details LIKE '%"inventory_draft"%'"""))
