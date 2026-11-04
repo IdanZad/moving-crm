@@ -586,7 +586,7 @@ export default function CustomerMovePage() {
   const [preparedSigned, setPreparedSigned] = useState(false);
   const [preparedApproved, setPreparedApproved] = useState(false);
   const [estimateViewerOpen, setEstimateViewerOpen] = useState(false);
-  const [inventoryPdf, setInventoryPdf] = useState<{ url: string; filename: string } | null>(null);
+  const [inventoryPdf, setInventoryPdf] = useState<{ url: string; filename: string; title?: string; description?: string } | null>(null);
   const [workOrderBusy, setWorkOrderBusy] = useState(false);
   // Downloaded PDFs are named "<kind> - <customer> - <company>.pdf".
   function pdfName(kind: string) {
@@ -603,7 +603,8 @@ export default function CustomerMovePage() {
         const result = await response.json().catch(() => ({}));
         throw new Error(typeof result.detail === 'string' ? result.detail : `Could not open the work order (HTTP ${response.status}). Please try again.`);
       }
-      setInventoryPdf({ url: URL.createObjectURL(await response.blob()), filename: pdfName('Work order') });
+      setInventoryPdf({ url: URL.createObjectURL(await response.blob()), filename: pdfName('Work order'),
+        title: 'Work order', description: 'The signed estimate with the team notes and payments.' });
     } catch (error) {
       setPdfError((error as Error).message);
     } finally {
@@ -663,10 +664,18 @@ export default function CustomerMovePage() {
     return response.blob();
   }
   // Show a signature on its report row as soon as the estimate viewer closes.
-  async function refreshReportHistory() {
+  // The signature status and the report history load separately, so one failing never keeps the other stale.
+  async function refreshSignatureStatus() {
     try {
-      const [next, history] = await Promise.all([call('/sections/pricing'), call('/sections/inventory')]);
-      setData(previous => previous ? {...previous, report_history: history.report_history, signature_status: next.signature_status, signature_requires_resign: next.signature_requires_resign, work_order_available: next.work_order_available} : previous);
+      const next = await call('/sections/pricing');
+      setData(previous => previous ? {...previous, signature_status: next.signature_status, signature_requires_resign: next.signature_requires_resign, work_order_available: next.work_order_available} : previous);
+    } catch { /* The status refreshes with the next page load. */ }
+  }
+  async function refreshReportHistory() {
+    void refreshSignatureStatus();
+    try {
+      const history = await call('/sections/inventory');
+      setData(previous => previous ? {...previous, report_history: history.report_history} : previous);
     } catch { /* The history refreshes with the next page load. */ }
   }
   async function call(path:string, body?:unknown, method?:string) {
@@ -1398,7 +1407,7 @@ export default function CustomerMovePage() {
 
               {!estimateViewerOpen && pageSections.every(section => sections[section].ready) && <EstimateSigning key={accessId} base={base} headers={headers} customerName={data.name || ''} version="" onClose={() => {}} reportIds={(data.report_history || []).map(report => report.id)}
                 disabled={!data.estimate || data.spark?.status !== 'completed' || pdfBusy || answersSaving || calculatingPrice || busy || pricingLoading || !!pricingLoadError} />}
-              {estimateViewerOpen && <EstimateViewer filename={pdfName('Estimate')} alreadySigned={preparedSigned} approved={preparedApproved} rep={repPage} onApproved={() => setPreparedApproved(true)} base={base} headers={headers} customerName={data.name || ''} version={preparedEstimate} url={estimatePdfUrl} error={pdfError} onClose={() => { setEstimateViewerOpen(false); void refreshReportHistory(); }} />}
+              {estimateViewerOpen && <EstimateViewer filename={pdfName('Estimate')} onSignatureRemoved={() => void refreshSignatureStatus()} alreadySigned={preparedSigned} approved={preparedApproved} rep={repPage} onApproved={() => setPreparedApproved(true)} base={base} headers={headers} customerName={data.name || ''} version={preparedEstimate} url={estimatePdfUrl} error={pdfError} onClose={() => { setEstimateViewerOpen(false); void refreshReportHistory(); }} />}
               {(data.estimate_needs_update || data.list_changed) && <p role="status">Your inventory has changed. The displayed price needs to be recalculated. Open the estimate to update it before signing.</p>}
               <ReportHistory signatureStatus={data.signature_status} requiresResign={data.signature_status === 'changed'} reports={data.report_history || []} onSelect={selectReport} disabled={busy || calculatingPrice || answersSaving || reportState === 'running'} fetchSignedPdf={fetchSignedPdf} />
               {!showQuestions && answersSaving && <p role="status">Saving your answers in the background...</p>}
@@ -1435,7 +1444,7 @@ export default function CustomerMovePage() {
               await Promise.allSettled([loadSection('inventory', true), loadSection('volume', true), loadSection('pricing', true)]);
               setCalculationError('');
             }} onClose={changed => { setShowInventoryList(false); if (changed) void loadSection('inventory', true); }} />}
-            {inventoryPdf && <InventoryViewer url={inventoryPdf.url} filename={inventoryPdf.filename} onClose={() => { URL.revokeObjectURL(inventoryPdf.url); setInventoryPdf(null); }} />}
+            {inventoryPdf && <InventoryViewer url={inventoryPdf.url} filename={inventoryPdf.filename} title={inventoryPdf.title} description={inventoryPdf.description} onClose={() => { URL.revokeObjectURL(inventoryPdf.url); setInventoryPdf(null); }} />}
             {showQuestions && (
               <div className="cm-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="packing-title" onClick={event => { if (event.target === event.currentTarget) setShowQuestions(false); }}>
                 <div className="cm-modal-card">

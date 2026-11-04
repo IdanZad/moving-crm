@@ -12,7 +12,7 @@ from reportlab.lib import colors
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.enums import TA_RIGHT
 from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, KeepTogether, PageBreak, Flowable
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, KeepTogether, PageBreak
 
 
 def inventory_entries(rows, questions, services=None):
@@ -299,21 +299,6 @@ def _summary(data, styles, p, table, link=True, title='MOVING ESTIMATE'):
     return story
 
 
-class SignHere(Flowable):
-    """The empty signature area, marked with a link the estimate viewer finds to open signing there."""
-    def __init__(self, width, height):
-        super().__init__()
-        self.width, self.height = width, height
-
-    def draw(self):
-        # A link to its own spot: harmless in any PDF reader, and found by name in the viewer.
-        self.canv.bookmarkHorizontal(SIGN_HERE, 0, self.height)
-        self.canv.linkRect('', SIGN_HERE, (0, 0, self.width, self.height), relative=1, thickness=0)
-
-
-SIGN_HERE = 'sign-here'
-
-
 def _signature_block(data, p):
     """The client's signature under the price breakdown and note, on page one: an empty line to sign
     on, or the signature once signed."""
@@ -329,7 +314,7 @@ def _signature_block(data, p):
         details = [p(signature['name']), p('Signed: ' + signature['signed_at'], 'NoteEstimate'),
                    p('Estimate version: ' + signature['estimate_id'], 'NoteEstimate')]
     else:
-        line = Table([[SignHere(width, height)]], colWidths=[width], rowHeights=[height], hAlign='LEFT')
+        line = Table([['']], colWidths=[width], rowHeights=[height], hAlign='LEFT')
         details = [p('Name and date are added when you sign.', 'NoteEstimate')]
     line.setStyle(TableStyle([('LINEBELOW', (0, 0), (-1, -1), .8, MUTED), ('LEFTPADDING', (0, 0), (-1, -1), 0)]))
     return KeepTogether([p('Client signature', 'SectionEstimate'),
