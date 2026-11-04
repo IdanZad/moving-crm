@@ -588,7 +588,12 @@ export default function CustomerMovePage() {
   const [estimateViewerOpen, setEstimateViewerOpen] = useState(false);
   const [inventoryPdf, setInventoryPdf] = useState<{ url: string; filename: string } | null>(null);
   const [workOrderBusy, setWorkOrderBusy] = useState(false);
-  // The work order is built when opened, so it has the payments and notes as they are now.
+  // Downloaded PDFs are named "<kind> - <customer> - <company>.pdf".
+  function pdfName(kind: string) {
+    const clean = (value: string) => value.replace(/[<>:"/\\|?*\u0000-\u001f\u007f]/g, '').trim().replace(/\.+$/, '');
+    return [kind, clean(data?.name || ''), clean(data?.company_details?.name || data?.company || '')].filter(Boolean).join(' - ') + '.pdf';
+  }
+  // The signed estimate with the current notes and payments after the signature.
   async function openWorkOrder() {
     setPdfError('');
     setWorkOrderBusy(true);
@@ -596,10 +601,9 @@ export default function CustomerMovePage() {
       const response = await fetch(base + '/work-order.pdf', { headers, cache: 'no-store' });
       if (!response.ok) {
         const result = await response.json().catch(() => ({}));
-        throw new Error(typeof result.detail === 'string' ? result.detail : 'Could not open the work order. Please try again.');
+        throw new Error(typeof result.detail === 'string' ? result.detail : `Could not open the work order (HTTP ${response.status}). Please try again.`);
       }
-      const filename = ['Work order', (data?.name || '').replace(/[<>:"/\\|?*\u0000-\u001f\u007f]/g, '').trim()].filter(Boolean).join(' - ') + '.pdf';
-      setInventoryPdf({ url: URL.createObjectURL(await response.blob()), filename });
+      setInventoryPdf({ url: URL.createObjectURL(await response.blob()), filename: pdfName('Work order') });
     } catch (error) {
       setPdfError((error as Error).message);
     } finally {
@@ -1350,7 +1354,7 @@ export default function CustomerMovePage() {
               </ol>;
               })()}
               {data.signature_status === 'signed' && <small className="cm-estimate-button-status" role="status">Signed - current estimate</small>}
-              {repPage && data.signature_status === 'signed' && data.work_order_available && <button type="button" className="cm-secondary-btn" disabled={workOrderBusy} onClick={() => void openWorkOrder()}>{workOrderBusy ? 'Preparing work order...' : 'Work order'}</button>}
+              {repPage && data.signature_status === 'signed' && data.work_order_available && <button type="button" className="cm-secondary-btn" disabled={workOrderBusy} onClick={() => void openWorkOrder()}>Work order</button>}
               {data.spark && data.spark.status !== 'completed' && <p role="status">{data.spark.status === 'running' ? 'Analyzing your inventory...' : data.spark.status === 'failed' ? 'Inventory report failed.' : 'Inventory report queued.'}</p>}
               {pdfError && <p ref={pdfMessage} className="cm-field-error" role="alert">{pdfError}</p>}
               {data.estimate?.charges && data.estimate.charges.length > 0 && (
@@ -1394,7 +1398,7 @@ export default function CustomerMovePage() {
 
               {!estimateViewerOpen && pageSections.every(section => sections[section].ready) && <EstimateSigning key={accessId} base={base} headers={headers} customerName={data.name || ''} version="" onClose={() => {}} reportIds={(data.report_history || []).map(report => report.id)}
                 disabled={!data.estimate || data.spark?.status !== 'completed' || pdfBusy || answersSaving || calculatingPrice || busy || pricingLoading || !!pricingLoadError} />}
-              {estimateViewerOpen && <EstimateViewer alreadySigned={preparedSigned} approved={preparedApproved} rep={repPage} onApproved={() => setPreparedApproved(true)} base={base} headers={headers} customerName={data.name || ''} version={preparedEstimate} url={estimatePdfUrl} error={pdfError} onClose={() => { setEstimateViewerOpen(false); void refreshReportHistory(); }} />}
+              {estimateViewerOpen && <EstimateViewer filename={pdfName('Estimate')} alreadySigned={preparedSigned} approved={preparedApproved} rep={repPage} onApproved={() => setPreparedApproved(true)} base={base} headers={headers} customerName={data.name || ''} version={preparedEstimate} url={estimatePdfUrl} error={pdfError} onClose={() => { setEstimateViewerOpen(false); void refreshReportHistory(); }} />}
               {(data.estimate_needs_update || data.list_changed) && <p role="status">Your inventory has changed. The displayed price needs to be recalculated. Open the estimate to update it before signing.</p>}
               <ReportHistory signatureStatus={data.signature_status} requiresResign={data.signature_status === 'changed'} reports={data.report_history || []} onSelect={selectReport} disabled={busy || calculatingPrice || answersSaving || reportState === 'running'} fetchSignedPdf={fetchSignedPdf} />
               {!showQuestions && answersSaving && <p role="status">Saving your answers in the background...</p>}

@@ -1135,7 +1135,7 @@ def sign_estimate(signature_id: str, body: EstimateSigningInput, access: PublicM
 
 @router.get('/api/public-moves/{access_id}/work-order.pdf')
 def work_order_pdf(access: PublicMoveAccess = Depends(verified), db: Session = Depends(get_db), request: Request = None):
-    """For reps: the signed estimate as signed, with the CRM payments and the job's internal and foreman notes as they are now."""
+    """For reps: the signed estimate as signed, with the job's notes and the CRM payments, as they are now, after the signature."""
     from estimate_pdf import build_estimate_pdf
     if not is_rep_request(access, request):
         raise HTTPException(403, 'The work order is available to your moving team only.')
@@ -1146,18 +1146,11 @@ def work_order_pdf(access: PublicMoveAccess = Depends(verified), db: Session = D
     if not record or not payments:
         raise HTTPException(409, 'The work order is ready once the estimate is signed and a payment is entered in the CRM.')
     job = db.get(LeadJob, access.job_id)
-    lead = db.get(Lead, access.lead_id)
-    company = db.get(Company, job.company_id or lead.company_id) if (job.company_id or lead.company_id) else None
     snapshot = json.loads(record.snapshot)
     data = dict(snapshot['data'], signature=json.loads(record.signature))
     pdf = build_estimate_pdf(data, snapshot['rows'], work_order={
-        'payments': [payment.to_dict() for payment in payments], 'internal_notes': job.notes, 'foreman_notes': job.foreman_notes,
-        'number': f"{lead.quote_number}-{job.job_order}" if lead.quote_number else str(job.job_order),
-        'booked_date': job.booked_move_date.isoformat() if job.booked_move_date else '',
-        'foreman': job.foreman.name if job.foreman else '', 'weight': lead.weight,
-        'crew_size': job.crew_size, 'trucks': job.trucks, 'start_time': job.start_time,
-        'estimated_hours': job.estimated_hours, 'travel_hours': job.travel_hours,
-        'valuation_per_lb': company.valuation_per_lb if company else None})
+        'payments': [payment.to_dict() for payment in payments],
+        'internal_notes': job.notes, 'foreman_notes': job.foreman_notes})
     return Response(pdf, media_type='application/pdf', headers={
         'Content-Disposition': 'inline; filename="work-order-' + record.id + '.pdf"',
         'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff'})
