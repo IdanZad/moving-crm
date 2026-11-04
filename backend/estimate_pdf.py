@@ -225,14 +225,26 @@ def _summary(data, styles, p, table, link=True):
     story = [header,
              Spacer(1, 12), Paragraph('MOVING ESTIMATE', styles['Title']),
              p('Prepared ' + (data.get('prepared_at') or datetime.now(timezone.utc).strftime('%B %d, %Y (UTC)')), 'NoteEstimate')]
-    # Every phone, then every email: the main one first, then the extras.
-    contacts = [data.get('phone'), *[row['value'] for row in data.get('contacts') or [] if row['kind'] == 'phone'],
-                data.get('email'), *[row['value'] for row in data.get('contacts') or [] if row['kind'] == 'email']]
-    story.append(table([[p('CUSTOMER\n' + data.get('name', '')), p('PICKUP DATE\n' + str(data.get('move_date') or 'Not scheduled'))],
-                        [p('\n'.join(filter(None, contacts))), p(('PARTIAL ESTIMATE\n' if any(c.get('pending') for c in estimate.get('charges', [])) else 'ESTIMATED TOTAL\n') + money(estimate['price']))],
-                        [p('PICKUP\n' + data.get('pickup', '')), p('DELIVERY\n' + data.get('delivery', ''))]], [261, 261]))
+    # Every phone and every email: the main one first, then the extras.
+    def contacts(kind):
+        return '\n'.join(filter(None, [data.get(kind), *[row['value'] for row in data.get('contacts') or [] if row['kind'] == kind]]))
+    story += [p('Customer', 'SectionEstimate'),
+              table([[p('NAME\n' + data.get('name', '')), p('PHONE\n' + contacts('phone')), p('EMAIL\n' + contacts('email'))]], [150, 130, 242]),
+              p('Move details', 'SectionEstimate')]
+    def stops(kind):
+        return '\n'.join(stop.get('address', '') for stop in data.get('stops', []) if stop.get('type') == kind) or 'None'
+    story.append(table([[p('PICKUP\n' + data.get('pickup', '')), p('PICKUP STOPS\n' + stops('pickup')),
+                         p('DELIVERY\n' + data.get('delivery', '')), p('DELIVERY STOPS\n' + stops('delivery'))]], [130, 131, 130, 131]))
+    # The earliest delivery date is the customer's storage answer, so it shows only where storage is offered.
+    storage = data.get('storage')
+    dates = [p('PICKUP DATE\n' + str(data.get('move_date') or 'Not scheduled'))]
+    if storage:
+        dates.append(p('FIRST AVAILABLE DELIVERY DATE\n' + (storage.get('available_date') or 'Not answered')))
+    dates.append(p(('PARTIAL ESTIMATE\n' if any(c.get('pending') for c in estimate.get('charges', [])) else 'ESTIMATED TOTAL\n') + money(estimate['price'])))
+    story.append(table([dates], [150, 222, 150] if storage else [261, 261]))
     for stop in data.get('stops', []):
-        story.append(p(f"Additional stop ({stop.get('type') or 'unspecified'}): {stop.get('address', '')}"))
+        if stop.get('type') not in ('pickup', 'delivery'):
+            story.append(p(f"Additional stop (unspecified): {stop.get('address', '')}"))
     story += [p('Price breakdown', 'SectionEstimate'), p(f"Estimated shipment volume: {ceil(float(estimate.get('cuft') or 0))} cu ft")]
     package = data.get('packing_package') or {}
     minimum = package.get('minimum_cubic_feet')
