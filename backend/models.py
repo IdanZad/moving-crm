@@ -547,9 +547,6 @@ class LeadJob(Base):
     pricing_match_key = Column(String(64))
     # The plan's minimum billable cu ft for this job, stored once per plan match.
     minimum_cuft = Column(Integer)
-    # The customer page's service cards as last built, and a fingerprint of everything they were built from.
-    pricing_options_cache = Column(Text)
-    pricing_options_key = Column(String(64))
     # The estimate copy a rep approved for signing; any saved change to the estimate clears it (estimate_approval.py).
     estimate_approved_id = Column(String(36))
     estimate_approved_at = Column(DateTime)

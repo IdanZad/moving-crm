@@ -737,13 +737,13 @@ def move_section(section: Literal['move', 'inventory', 'media', 'volume', 'estim
     if _has_inventory_list(state):
         from price_validity import refresh_expired_price
         refresh_expired_price(lead, job, db)
-    saved = lambda: (job.pricing_match_key, job.minimum_cuft, job.pricing_options_key)
+    saved = lambda: (job.pricing_match_key, job.minimum_cuft)
     before = saved()
     result = _move_details(access, db, pricing_only=True, individual_charges=is_rep_request(access, request))
     from delivery_fees import browser_fee_routes
     from price_validity import price_is_locked
     result['mileage_routes'] = [] if price_is_locked(lead, job) else browser_fee_routes(lead, job, db)
-    # Keep a newly worked-out plan match and cards, so the next load reads them instead of working them out again.
+    # Keep a newly worked-out plan match, so the next load reads it instead of working it out again.
     # Compared by value: an automatic flush before a later query clears SQLAlchemy's change history.
     if saved() != before:
         db.commit()
@@ -835,9 +835,8 @@ def _move_details(access, db, *, refresh_report=True, include_pricing=True, pric
         pricing_error = ''
     if include_pricing and pricing_required and not is_spark_pending and not report_import_pending and (job.company_id or lead.company_id):
         try:
-            # The estimate shows the cards as the page last showed them; the page keeps them current.
-            pricing_options = (json.loads(job.pricing_options_cache) if estimate_only and job.pricing_options_cache
-                               else _customer_pricing_options(lead, job, db))
+            # Saved answers update the page without rebuilding the saved cards, so the estimate checks them too.
+            pricing_options = _customer_pricing_options(lead, job, db)
             if estimate is not None:
                 estimate['minimum_cuft'] = pricing_options.get('minimum_cuft')
             packing_package = pricing_options['packing_package']
@@ -910,28 +909,12 @@ def _move_details(access, db, *, refresh_report=True, include_pricing=True, pric
 
 @with_job_locations
 def _customer_pricing_options(lead, job, db):
-    """The service cards: read as last built, and built again only when something they use has changed."""
-    import hashlib
-    from fastapi.encoders import jsonable_encoder
-    from routes.pricing import infer_job_move_type
-    infer_job_move_type(lead, job, db)  # Brings the saved plan match up to date.
-    conversation = db.get(LeadLiveSwitch, lead.id)
-    source = [job.pricing_match_key, job.customer_packing_package, job.customer_packing, job.estimated_materials,
-              job.move_date, job.stop_types, _read_job_route(db, job), str(lead.volume),
-              conversation.details if conversation else '']
-    key = hashlib.sha256(json.dumps(source, default=str).encode()).hexdigest()
-    if job.pricing_options_key == key and job.pricing_options_cache:
-        return json.loads(job.pricing_options_cache)
-    options = jsonable_encoder(_build_customer_pricing_options(lead, job, db))
-    job.pricing_options_cache, job.pricing_options_key = json.dumps(options), key
-    return options
-
-
-def _build_customer_pricing_options(lead, job, db):
+    """The service cards, built from the plan and the customer's saved answers."""
     from routes.pricing import (customer_packing_options, customer_packing_package,
                                 customer_shuttle, customer_storage, customer_elevator,
-                                customer_long_carry, customer_stairs, customer_minimum_volume)
+                                customer_long_carry, customer_stairs, customer_minimum_volume, infer_job_move_type)
     from extra_stops import option as extra_stops_option
+    infer_job_move_type(lead, job, db)  # Brings the saved plan match up to date.
     return {
         'minimum_cuft': customer_minimum_volume(lead, job, db),
         'packing_package': customer_packing_package(lead, job, db),
