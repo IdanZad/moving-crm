@@ -1077,6 +1077,7 @@ def get_dispatch_calendar(
                 "weight": float(lead.weight) if lead.weight is not None else None,
                 "estimatedTotal": _deserialize_estimated_total(lead.estimated_total),
                 "payments": payments.get(lead.id, []),
+                "thirdPartyPayout": lead.third_party_payout(),
                 "status": lead.status or "",
             }
             for job, lead, company_name, company_color, effective_date in filtered
@@ -1185,6 +1186,7 @@ def get_sales_calendar(
                 "price": float(job.price) if job.price is not None else None,
                 "estimatedTotal": _deserialize_estimated_total(lead.estimated_total),
                 "payments": payments.get(lead.id, []),
+                "thirdPartyPayout": lead.third_party_payout(),
                 "status": lead.status or "",
             }
             for job, lead, company_name, company_color, assigned_to_id, assigned_to_name, assigned_to_role, effective_date in filtered
@@ -2262,14 +2264,20 @@ class LeadPaymentPayload(BaseModel):
 
     amount: float = 0
     taken_by_user: str = Field(default="", alias="takenByUser")
+    paid_at: date | None = Field(default=None, alias="paidAt")
     rep_paid: bool = Field(default=False, alias="repPaid")
     rep_paid_at: str = Field(default="", alias="repPaidAt")
     rep_commission_percent: float | None = Field(default=None, alias="repCommissionPercent")
     rep_commission_amount: float | None = Field(default=None, alias="repCommissionAmount")
-    third_party_commission_to: str = Field(default="", alias="thirdPartyCommissionTo")
+
+
+class ThirdPartyPayoutPayload(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    third_party_commission_to: str = Field(default="", alias="thirdPartyCommissionTo", max_length=255)
     third_party_commission_amount: float = Field(default=0, alias="thirdPartyCommissionAmount")
     third_party_commission_paid: bool = Field(default=False, alias="thirdPartyCommissionPaid")
-    third_party_commission_paid_at: str = Field(default="", alias="thirdPartyCommissionPaidAt")
+    third_party_commission_paid_at: str = Field(default="", alias="thirdPartyCommissionPaidAt", max_length=40)
 
 
 def _serialize_estimated_total(payload: EstimatedTotalPayload | None) -> str | None:
@@ -4107,17 +4115,12 @@ def _payment_or_404(lead_id: str, payment_id: str, user: User, db: Session) -> L
 
 def _check_payment(payment: LeadPayment) -> None:
     amount = float(payment.amount or 0)
-    third_party = float(payment.third_party_commission_amount or 0)
     if amount < 0:
         raise HTTPException(status_code=400, detail="amount must be >= 0")
-    if third_party < 0:
-        raise HTTPException(status_code=400, detail="thirdPartyCommissionAmount must be >= 0")
-    if third_party > amount:
-        raise HTTPException(status_code=400, detail="thirdPartyCommissionAmount cannot exceed the payment amount")
     if payment.rep_commission_percent is not None and not 0 <= float(payment.rep_commission_percent) <= 100:
         raise HTTPException(status_code=400, detail="repCommissionPercent must be between 0 and 100")
-    if payment.rep_commission_amount is not None and not 0 <= float(payment.rep_commission_amount) <= max(0, amount - third_party):
-        raise HTTPException(status_code=400, detail="repCommissionAmount cannot exceed the commissionable payment amount")
+    if payment.rep_commission_amount is not None and not 0 <= float(payment.rep_commission_amount) <= amount:
+        raise HTTPException(status_code=400, detail="repCommissionAmount cannot exceed the payment amount")
 
 
 @router.post("/leads/{lead_id}/payments")
@@ -4127,7 +4130,7 @@ def add_lead_payment(lead_id: str, body: LeadPaymentPayload, user: User = Depend
         raise HTTPException(status_code=403, detail="Only admin and sales reps can add payments")
     lead = _get_visible_lead_or_404(lead_id, user, db)
     payment = LeadPayment(lead_id=lead.id, source="crm", sort_order=len(lead.payments),
-                          amount=Decimal(str(body.amount)), taken_by_user=body.taken_by_user.strip())
+                          amount=Decimal(str(body.amount)), taken_by_user=body.taken_by_user.strip(), paid_at=body.paid_at)
     _check_payment(payment)
     db.add(payment)
     db.commit()
@@ -4141,7 +4144,7 @@ def update_lead_payment(lead_id: str, payment_id: str, body: LeadPaymentPayload,
     payment = _payment_or_404(lead_id, payment_id, user, db)
     sent = body.model_fields_set
     changed = lambda name, value: name in sent and getattr(body, name) != value
-    if (changed("amount", float(payment.amount or 0)) or changed("taken_by_user", payment.taken_by_user)):
+    if changed("amount", float(payment.amount or 0)) or changed("taken_by_user", payment.taken_by_user) or changed("paid_at", payment.paid_at):
         if payment.source == "smartmoving":
             raise HTTPException(status_code=400, detail="This payment comes from SmartMoving. Change it in SmartMoving.")
         if user.role not in ("admin", "sales_rep"):
@@ -4154,17 +4157,9 @@ def update_lead_payment(lead_id: str, payment_id: str, body: LeadPaymentPayload,
     }
     if any(changed(name, value) for name, value in current_commission.items()) and user.role != "admin":
         raise HTTPException(status_code=403, detail="Only admins can manage lead rep commission overrides")
-    third_party = {
-        "third_party_commission_to": payment.third_party_commission_to,
-        "third_party_commission_amount": float(payment.third_party_commission_amount or 0),
-        "third_party_commission_paid": payment.third_party_commission_paid,
-        "third_party_commission_paid_at": payment.third_party_commission_paid_at,
-    }
-    if any(changed(name, value) for name, value in third_party.items()) and user.role != "admin":
-        raise HTTPException(status_code=403, detail="Only admins can manage third-party payouts")
     for name in sent:
         value = getattr(body, name)
-        if name in ("amount", "rep_commission_percent", "rep_commission_amount", "third_party_commission_amount"):
+        if name in ("amount", "rep_commission_percent", "rep_commission_amount"):
             value = Decimal(str(value)) if value is not None else None
         elif isinstance(value, str):
             value = value.strip()
@@ -4172,6 +4167,29 @@ def update_lead_payment(lead_id: str, payment_id: str, body: LeadPaymentPayload,
     _check_payment(payment)
     db.commit()
     return payment.to_dict()
+
+
+@router.patch("/leads/{lead_id}/third-party-payout")
+def update_third_party_payout(lead_id: str, body: ThirdPartyPayoutPayload, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """The lead's one third-party payout; only the fields sent change."""
+    if user.role != "admin":
+        raise HTTPException(status_code=403, detail="Only admins can manage third-party payouts")
+    lead = _get_visible_lead_or_404(lead_id, user, db)
+    sent = body.model_fields_set
+    if "third_party_commission_to" in sent:
+        lead.third_party_payout_to = body.third_party_commission_to.strip()
+    if "third_party_commission_amount" in sent:
+        if body.third_party_commission_amount < 0:
+            raise HTTPException(status_code=400, detail="thirdPartyCommissionAmount must be >= 0")
+        if body.third_party_commission_amount > sum(float(payment.amount or 0) for payment in lead.payments):
+            raise HTTPException(status_code=400, detail="The third-party payout cannot exceed the total payments")
+        lead.third_party_payout_amount = Decimal(str(body.third_party_commission_amount))
+    if "third_party_commission_paid" in sent:
+        lead.third_party_payout_paid = body.third_party_commission_paid
+    if "third_party_commission_paid_at" in sent:
+        lead.third_party_payout_paid_at = body.third_party_commission_paid_at.strip()
+    db.commit()
+    return lead.third_party_payout()
 
 
 @router.delete("/leads/{lead_id}/payments/{payment_id}")

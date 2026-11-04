@@ -451,9 +451,15 @@
   cursor: default;
 }
 
+.lead-payment-date {
+  margin-left: 6px;
+  color: #64748b;
+  font-size: 11px;
+}
+
 .lead-payment-form {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 120px;
+  grid-template-columns: minmax(0, 1fr) 150px 120px;
   gap: 8px;
   padding: 8px;
   border: 1px solid #d8dde6;
@@ -474,6 +480,20 @@
   padding: 6px 8px;
   border: 1px solid #b8c9db;
   border-radius: 6px;
+  color: #16325c;
+  font-size: 13px;
+}
+
+.lead-payment-form-rep {
+  display: grid;
+  gap: 3px;
+  align-content: start;
+  color: #52667e;
+  font-size: 11px;
+}
+
+.lead-payment-form-rep strong {
+  padding: 6px 0;
   color: #16325c;
   font-size: 13px;
 }

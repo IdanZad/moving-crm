@@ -296,6 +296,11 @@ class Lead(Base):
     service_type = Column(String(50))
     referral_source = Column(String(100))
     estimated_total = Column(Text)
+    # One third-party payout for the lead, deducted from its payments before the rep's commission.
+    third_party_payout_to = Column(String(255))
+    third_party_payout_amount = Column(Numeric(12, 2))
+    third_party_payout_paid = Column(Boolean)
+    third_party_payout_paid_at = Column(String(40))
 
     status = Column(String(30), nullable=False, default="new", index=True)
     # new → contacted → quoted → booked → scheduled → completed | lost | cancelled
@@ -311,6 +316,14 @@ class Lead(Base):
     # Extra phones and emails; phone and email above stay the main ones (texts, calls, SmartMoving).
     contacts = relationship("LeadContact", order_by="LeadContact.sort_order", cascade="all, delete-orphan", passive_deletes=True)
     payments = relationship("LeadPayment", order_by="LeadPayment.sort_order", cascade="all, delete-orphan", passive_deletes=True)
+
+    def third_party_payout(self):
+        return {
+            "thirdPartyCommissionTo": self.third_party_payout_to or "",
+            "thirdPartyCommissionAmount": float(self.third_party_payout_amount or 0),
+            "thirdPartyCommissionPaid": bool(self.third_party_payout_paid),
+            "thirdPartyCommissionPaidAt": self.third_party_payout_paid_at or "",
+        }
 
     def to_dict(self):
         estimated_total_data = None
@@ -367,6 +380,7 @@ class Lead(Base):
             "notes": self.notes or "",
             "estimatedTotal": estimated_total_data,
             "payments": payments_data,
+            "thirdPartyPayout": self.third_party_payout(),
         }
 
 
@@ -621,7 +635,7 @@ class LeadContact(Base):
 
 
 class LeadPayment(Base):
-    """A payment on a lead, with its rep and third-party payout. SmartMoving's are synced; the CRM's are entered here."""
+    """A payment on a lead, with its rep payout. SmartMoving's are synced; the CRM's are entered here."""
     __tablename__ = "lead_payments"
 
     id = Column(String(36), primary_key=True, default=_uuid)
@@ -630,14 +644,11 @@ class LeadPayment(Base):
     sort_order = Column(Integer, nullable=False, default=0)
     amount = Column(Numeric(12, 2), nullable=False, default=0)
     taken_by_user = Column(String(255), nullable=False, default="")
+    paid_at = Column(Date)  # the day the payment was made
     rep_paid = Column(Boolean, nullable=False, default=False)
     rep_paid_at = Column(String(40), nullable=False, default="")
     rep_commission_percent = Column(Numeric(6, 2))
     rep_commission_amount = Column(Numeric(12, 2))
-    third_party_commission_to = Column(String(255), nullable=False, default="")
-    third_party_commission_amount = Column(Numeric(12, 2), nullable=False, default=0)
-    third_party_commission_paid = Column(Boolean, nullable=False, default=False)
-    third_party_commission_paid_at = Column(String(40), nullable=False, default="")
 
     def to_dict(self):
         return {
@@ -645,14 +656,11 @@ class LeadPayment(Base):
             "source": self.source,
             "amount": float(self.amount or 0),
             "takenByUser": self.taken_by_user or "",
+            "paidAt": self.paid_at.isoformat() if self.paid_at else "",
             "repPaid": bool(self.rep_paid),
             "repPaidAt": self.rep_paid_at or "",
             "repCommissionPercent": float(self.rep_commission_percent) if self.rep_commission_percent is not None else None,
             "repCommissionAmount": float(self.rep_commission_amount) if self.rep_commission_amount is not None else None,
-            "thirdPartyCommissionTo": self.third_party_commission_to or "",
-            "thirdPartyCommissionAmount": float(self.third_party_commission_amount or 0),
-            "thirdPartyCommissionPaid": bool(self.third_party_commission_paid),
-            "thirdPartyCommissionPaidAt": self.third_party_commission_paid_at or "",
         }
 
 

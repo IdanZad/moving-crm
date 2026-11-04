@@ -181,21 +181,24 @@ function RepCommissionEditor({
   );
 }
 
-type PaymentDraft = { index: number; amount: string; takenByUser: string };
+type PaymentDraft = { index: number; amount: string; takenByUser: string; paidAt: string };
 
 function PaymentForm({ draft, saving, onChange, onCancel, onSave }: {
   draft: PaymentDraft;
   saving: boolean;
   onChange: (draft: PaymentDraft) => void;
   onCancel: () => void;
-  onSave: (amount: number, takenByUser: string) => void;
+  onSave: (amount: number, takenByUser: string, paidAt: string) => void;
 }) {
   const amount = Number(draft.amount);
-  const invalid = draft.amount.trim() === "" || !Number.isFinite(amount) || amount < 0;
+  const invalid = draft.amount.trim() === "" || !Number.isFinite(amount) || amount < 0 || !draft.paidAt;
   return (
-    <form className="lead-payment-form" onSubmit={(event) => { event.preventDefault(); if (!invalid) onSave(amount, draft.takenByUser.trim()); }}>
-      <label>Taken by
-        <input value={draft.takenByUser} maxLength={255} placeholder="Name or email" onChange={(event) => onChange({ ...draft, takenByUser: event.target.value })} />
+    <form className="lead-payment-form" onSubmit={(event) => { event.preventDefault(); if (!invalid) onSave(amount, draft.takenByUser.trim(), draft.paidAt); }}>
+      <div className="lead-payment-form-rep">Taken by
+        <strong>{draft.takenByUser || "No rep assigned"}</strong>
+      </div>
+      <label>Date
+        <input type="date" value={draft.paidAt} onChange={(event) => onChange({ ...draft, paidAt: event.target.value })} />
       </label>
       <label>Amount
         <input type="number" min={0} step="0.01" value={draft.amount} placeholder="0.00" autoFocus onChange={(event) => onChange({ ...draft, amount: event.target.value })} />
@@ -424,6 +427,7 @@ export default function LeadDetail() {
   const [savingRepPaymentIndex, setSavingRepPaymentIndex] = useState<number | null>(null);
   // The payment being added (index -1) or edited.
   const [paymentDraft, setPaymentDraft] = useState<PaymentDraft | null>(null);
+  const [savingPayout, setSavingPayout] = useState(false);
   const [statusMenuOpen, setStatusMenuOpen] = useState(false);
   const [statusMenuRect, setStatusMenuRect] = useState<{ top: number; left: number; width: number; height: number } | null>(null);
   const [deletingLead, setDeletingLead] = useState(false);
@@ -1253,14 +1257,11 @@ export default function LeadDetail() {
           source: String(item.source ?? ""),
           amount,
           takenByUser: String(item.takenByUser ?? "").trim(),
+          paidAt: String(item.paidAt ?? ""),
           repPaid: Boolean(item.repPaid ?? false),
           repPaidAt: String(item.repPaidAt ?? "").trim(),
           repCommissionPercent: item.repCommissionPercent == null ? null : Number(item.repCommissionPercent),
           repCommissionAmount: item.repCommissionAmount == null ? null : Number(item.repCommissionAmount),
-          thirdPartyCommissionTo: String(item.thirdPartyCommissionTo ?? "").trim(),
-          thirdPartyCommissionAmount: Number(item.thirdPartyCommissionAmount ?? 0),
-          thirdPartyCommissionPaid: Boolean(item.thirdPartyCommissionPaid ?? false),
-          thirdPartyCommissionPaidAt: String(item.thirdPartyCommissionPaidAt ?? "").trim(),
         };
       })
       .filter((row): row is {
@@ -1268,17 +1269,25 @@ export default function LeadDetail() {
         source: string;
         amount: number;
         takenByUser: string;
+        paidAt: string;
         repPaid: boolean;
         repPaidAt: string;
         repCommissionPercent: number | null;
         repCommissionAmount: number | null;
-        thirdPartyCommissionTo: string;
-        thirdPartyCommissionAmount: number;
-        thirdPartyCommissionPaid: boolean;
-        thirdPartyCommissionPaidAt: string;
       } => row !== null);
   })();
   const paymentsTotal = paymentsData.reduce((sum, payment) => sum + payment.amount, 0);
+  // The lead's one third-party payout. Each payment's rep commission is figured after its share of it.
+  const thirdPartyPayout: ThirdPartyPayout = (() => {
+    const item = (lead.thirdPartyPayout && typeof lead.thirdPartyPayout === "object" ? lead.thirdPartyPayout : {}) as Record<string, unknown>;
+    return {
+      thirdPartyCommissionTo: String(item.thirdPartyCommissionTo ?? ""),
+      thirdPartyCommissionAmount: Number(item.thirdPartyCommissionAmount ?? 0),
+      thirdPartyCommissionPaid: Boolean(item.thirdPartyCommissionPaid ?? false),
+      thirdPartyCommissionPaidAt: String(item.thirdPartyCommissionPaidAt ?? ""),
+    };
+  })();
+  const payoutShare = (amount: number) => paymentsTotal > 0 ? thirdPartyPayout.thirdPartyCommissionAmount * amount / paymentsTotal : 0;
   const assignedToRole = String(
     lead.assigned_to_role
     || users.find((item) => item.id === String(lead.assigned_to || ""))?.role
@@ -1402,14 +1411,14 @@ export default function LeadDetail() {
     }
   }
 
-  async function addPayment(amount: number, takenByUser: string) {
+  async function addPayment(amount: number, takenByUser: string, paidAt: string) {
     if (!leadId) return false;
     setSavingRepPaymentIndex(paymentsData.length);
     try {
       const res = await fetch(`${API_BASE}/api/leads/${leadId}/payments`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...authHeaders(token) },
-        body: JSON.stringify({ amount, takenByUser }),
+        body: JSON.stringify({ amount, takenByUser, paidAt }),
       });
       const saved = await res.json().catch(() => null);
       if (!res.ok) throw new Error(saved?.detail || `HTTP ${res.status}`);
@@ -1609,17 +1618,23 @@ export default function LeadDetail() {
     }
   }
 
-  async function updateThirdPartyPayout(
-    paymentIndex: number,
-    changes: Partial<{
-      thirdPartyCommissionTo: string;
-      thirdPartyCommissionAmount: number;
-      thirdPartyCommissionPaid: boolean;
-      thirdPartyCommissionPaidAt: string;
-    }>,
-  ) {
-    if (user?.role !== "admin") return;
-    await savePayment(paymentIndex, changes);
+  async function updateThirdPartyPayout(changes: Partial<ThirdPartyPayout>) {
+    if (!leadId || user?.role !== "admin") return;
+    setSavingPayout(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/leads/${leadId}/third-party-payout`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", ...authHeaders(token) },
+        body: JSON.stringify(changes),
+      });
+      const saved = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(saved?.detail || `HTTP ${res.status}`);
+      setLead((current) => current ? { ...current, thirdPartyPayout: saved } : current);
+    } catch (e) {
+      alert(`Failed to update third-party payout: ${e instanceof Error ? e.message : "error"}`);
+    } finally {
+      setSavingPayout(false);
+    }
   }
 
   async function copyLead() {
@@ -2764,11 +2779,12 @@ export default function LeadDetail() {
                   <div key={`${payment.takenByUser}-${index}`} style={{ display: "grid", gap: 4, borderBottom: index < paymentsData.length - 1 ? "1px solid #e2e8f0" : "none", paddingBottom: 6, marginBottom: 2 }}>
                     {paymentDraft?.index === index ? (
                       <PaymentForm draft={paymentDraft} saving={savingRepPaymentIndex === index} onChange={setPaymentDraft} onCancel={() => setPaymentDraft(null)}
-                        onSave={async (amount, takenByUser) => { if (await savePayment(index, { amount, takenByUser })) setPaymentDraft(null); }} />
+                        onSave={async (amount, takenByUser, paidAt) => { if (await savePayment(index, { amount, takenByUser, paidAt })) setPaymentDraft(null); }} />
                     ) : (
                       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, fontSize: 12, color: "#334155" }}>
                         <span>
                           {payment.takenByUser || `Payment ${index + 1}`}
+                          {payment.paidAt ? <span className="lead-payment-date">{new Date(`${payment.paidAt}T00:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}</span> : null}
                           <span className={`lead-payment-source is-${payment.source === "smartmoving" ? "smartmoving" : "crm"}`}
                             title={payment.source === "smartmoving" ? "Synced from SmartMoving; change it in SmartMoving" : "Entered in the CRM; the SmartMoving sync never changes it"}>
                             {payment.source === "smartmoving" ? "SmartMoving" : "CRM"}
@@ -2776,7 +2792,7 @@ export default function LeadDetail() {
                         </span>
                         <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
                           {canEditPayments && payment.source !== "smartmoving" ? <>
-                            <button type="button" className="lead-payment-action" disabled={savingRepPaymentIndex !== null} onClick={() => setPaymentDraft({ index, amount: String(payment.amount), takenByUser: payment.takenByUser })}>Edit</button>
+                            <button type="button" className="lead-payment-action" disabled={savingRepPaymentIndex !== null} onClick={() => setPaymentDraft({ index, amount: String(payment.amount), takenByUser: payment.takenByUser, paidAt: payment.paidAt })}>Edit</button>
                             <button type="button" className="lead-payment-action" disabled={savingRepPaymentIndex !== null} onClick={() => void deletePayment(index)}>Delete</button>
                           </> : null}
                           <strong>{formatMoney(payment.amount)}</strong>
@@ -2786,8 +2802,8 @@ export default function LeadDetail() {
                     {canViewRepCommission ? <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, fontSize: 11 }}>
                       <span style={{ color: "#475569" }}>
                         Rep paid ({repPaidCommissionRatePercent(payment.repCommissionPercent).toFixed(6)}%
-                        {payment.thirdPartyCommissionAmount > 0 ? ` of ${formatMoney(Math.max(0, payment.amount - payment.thirdPartyCommissionAmount))} after third-party` : ""}):{" "}
-                        <strong>{formatMoney(repPaidCommissionAmount(payment.amount, payment.thirdPartyCommissionAmount, payment.repCommissionAmount))}</strong>
+                        {payoutShare(payment.amount) > 0 ? ` of ${formatMoney(Math.max(0, payment.amount - payoutShare(payment.amount)))} after third-party` : ""}):{" "}
+                        <strong>{formatMoney(repPaidCommissionAmount(payment.amount, payoutShare(payment.amount), payment.repCommissionAmount))}</strong>
                       </span>
                       {canManageRepPayments ? (
                         <label style={{ display: "inline-flex", alignItems: "center", gap: 6, color: payment.repPaid ? "#15803d" : "#92400e", fontWeight: 700 }}>
@@ -2808,9 +2824,9 @@ export default function LeadDetail() {
                       )}
                     </div> : null}
                     {canManageRepPayments ? <RepCommissionEditor
-                      commissionableAmount={Math.max(0, payment.amount - payment.thirdPartyCommissionAmount)}
+                      commissionableAmount={Math.max(0, payment.amount - payoutShare(payment.amount))}
                       percent={repPaidCommissionRatePercent(payment.repCommissionPercent)}
-                      amount={repPaidCommissionAmount(payment.amount, payment.thirdPartyCommissionAmount, payment.repCommissionAmount)}
+                      amount={repPaidCommissionAmount(payment.amount, payoutShare(payment.amount), payment.repCommissionAmount)}
                       overridden={payment.repCommissionPercent != null || payment.repCommissionAmount != null}
                       saving={savingRepPaymentIndex === index}
                       onSave={(percent, amount) => updateRepCommissionOverride(index, percent, amount)}
@@ -2818,41 +2834,39 @@ export default function LeadDetail() {
                     {canViewRepCommission && payment.repPaid && payment.repPaidAt ? (
                       <div style={{ fontSize: 10, color: "#64748b" }}>Paid at: {new Date(payment.repPaidAt).toLocaleString()}</div>
                     ) : null}
-                    {user?.role === "admin" ? (
-                      <ThirdPartyPayoutEditor
-                        payout={payment}
-                        paymentAmount={payment.amount}
-                        saving={savingRepPaymentIndex === index}
-                        onSave={(changes) => updateThirdPartyPayout(index, changes)}
-                      />
-                    ) : payment.thirdPartyCommissionAmount > 0 ? (
-                      <div style={{ borderTop: "1px dashed #cbd5e1", paddingTop: 6, display: "grid", gap: 4 }}>
-                        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, fontSize: 11 }}>
-                          <span style={{ color: "#475569" }}>
-                            Third-party payout{payment.thirdPartyCommissionTo ? ` — ${payment.thirdPartyCommissionTo}` : ""}
-                          </span>
-                          <strong>{formatMoney(payment.thirdPartyCommissionAmount)}</strong>
-                        </div>
-                        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
-                          <span style={{ color: payment.thirdPartyCommissionPaid ? "#15803d" : "#b91c1c", fontSize: 11, fontWeight: 700 }}>
-                            {payment.thirdPartyCommissionPaid ? "Paid" : "Unpaid"}
-                          </span>
-                        </div>
-                        {payment.thirdPartyCommissionPaidAt ? (
-                          <div style={{ fontSize: 10, color: "#64748b" }}>
-                            Paid at: {new Date(payment.thirdPartyCommissionPaidAt).toLocaleString()}
-                          </div>
-                        ) : null}
+                  </div>
+                ))}
+                {user?.role === "admin" ? (
+                  <ThirdPartyPayoutEditor
+                    payout={thirdPartyPayout}
+                    paymentAmount={paymentsTotal}
+                    saving={savingPayout}
+                    onSave={updateThirdPartyPayout}
+                  />
+                ) : thirdPartyPayout.thirdPartyCommissionAmount > 0 ? (
+                  <div style={{ borderTop: "1px dashed #cbd5e1", paddingTop: 6, display: "grid", gap: 4 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 12, fontSize: 11 }}>
+                      <span style={{ color: "#475569" }}>
+                        Third-party payout{thirdPartyPayout.thirdPartyCommissionTo ? ` \u2014 ${thirdPartyPayout.thirdPartyCommissionTo}` : ""}
+                      </span>
+                      <strong>{formatMoney(thirdPartyPayout.thirdPartyCommissionAmount)}</strong>
+                    </div>
+                    <span style={{ color: thirdPartyPayout.thirdPartyCommissionPaid ? "#15803d" : "#b91c1c", fontSize: 11, fontWeight: 700 }}>
+                      {thirdPartyPayout.thirdPartyCommissionPaid ? "Paid" : "Unpaid"}
+                    </span>
+                    {thirdPartyPayout.thirdPartyCommissionPaidAt ? (
+                      <div style={{ fontSize: 10, color: "#64748b" }}>
+                        Paid at: {new Date(thirdPartyPayout.thirdPartyCommissionPaidAt).toLocaleString()}
                       </div>
                     ) : null}
                   </div>
-                ))}
+                ) : null}
                 {canEditPayments ? (paymentDraft?.index === -1 ? (
                   <PaymentForm draft={paymentDraft} saving={savingRepPaymentIndex === paymentsData.length} onChange={setPaymentDraft} onCancel={() => setPaymentDraft(null)}
-                    onSave={async (amount, takenByUser) => { if (await addPayment(amount, takenByUser)) setPaymentDraft(null); }} />
+                    onSave={async (amount, takenByUser, paidAt) => { if (await addPayment(amount, takenByUser, paidAt)) setPaymentDraft(null); }} />
                 ) : (
                   <button type="button" className="lead-payment-action" style={{ justifySelf: "start" }} disabled={savingRepPaymentIndex !== null}
-                    onClick={() => setPaymentDraft({ index: -1, amount: "", takenByUser: "" })}>+ Add payment</button>
+                    onClick={() => setPaymentDraft({ index: -1, amount: "", takenByUser: String(lead.assigned_to_name || ""), paidAt: new Date().toLocaleDateString("en-CA") })}>+ Add payment</button>
                 )) : null}
                 <div style={{ borderTop: "1px solid #dbe4ef", marginTop: 2, paddingTop: 8, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, fontSize: 12, color: "#0f172a" }}>
                   <span style={{ fontWeight: 700 }}>Total Payments</span>

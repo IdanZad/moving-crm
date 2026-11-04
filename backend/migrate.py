@@ -149,6 +149,25 @@ def migrate() -> None:
         from sqlalchemy import inspect as inspect_schema
         payments_table_existed = inspect_schema(connection).has_table('lead_payments')
         LeadPayment.__table__.create(connection, checkfirst=True)
+        connection.execute(text('ALTER TABLE lead_payments ADD COLUMN IF NOT EXISTS paid_at DATE'))
+        for column, kind in (('third_party_payout_to', 'VARCHAR(255)'), ('third_party_payout_amount', 'NUMERIC(12, 2)'),
+                             ('third_party_payout_paid', 'BOOLEAN'), ('third_party_payout_paid_at', 'VARCHAR(40)')):
+            connection.execute(text(f'ALTER TABLE leads ADD COLUMN IF NOT EXISTS {column} {kind}'))
+        # Where payments were first made with a payout each, those payouts become the lead's one payout,
+        # and the old columns stop being required; they are left in place until they are dropped.
+        if connection.execute(text("""SELECT 1 FROM information_schema.columns
+                                      WHERE table_name = 'lead_payments' AND column_name = 'third_party_commission_amount'""")).first():
+            connection.execute(text("""
+                UPDATE leads SET third_party_payout_to = payout.recipient, third_party_payout_amount = payout.amount,
+                                 third_party_payout_paid = payout.paid, third_party_payout_paid_at = payout.paid_at
+                FROM (SELECT lead_id, MAX(NULLIF(third_party_commission_to, '')) AS recipient,
+                             SUM(third_party_commission_amount) AS amount, BOOL_AND(third_party_commission_paid) AS paid,
+                             MAX(third_party_commission_paid_at) AS paid_at
+                      FROM lead_payments WHERE third_party_commission_amount > 0 GROUP BY lead_id) AS payout
+                WHERE leads.id = payout.lead_id AND leads.third_party_payout_amount IS NULL"""))
+            for column in ('third_party_commission_to', 'third_party_commission_amount',
+                           'third_party_commission_paid', 'third_party_commission_paid_at'):
+                connection.execute(text(f'ALTER TABLE lead_payments ALTER COLUMN {column} DROP NOT NULL'))
         # Payments were a JSON list on the lead, all synced from SmartMoving. They move to their own rows once,
         # when the table is created; the old list is left as it was until it is dropped.
         if not payments_table_existed and connection.execute(text(
@@ -169,14 +188,21 @@ def migrate() -> None:
                              amount=number(item.get('amount')), taken_by_user=str(item.get('takenByUser') or '').strip(),
                              rep_paid=bool(item.get('repPaid')), rep_paid_at=str(item.get('repPaidAt') or '').strip(),
                              rep_commission_percent=number(item.get('repCommissionPercent'), None),
-                             rep_commission_amount=number(item.get('repCommissionAmount'), None),
-                             third_party_commission_to=str(item.get('thirdPartyCommissionTo') or '').strip(),
-                             third_party_commission_amount=number(item.get('thirdPartyCommissionAmount')),
-                             third_party_commission_paid=bool(item.get('thirdPartyCommissionPaid')),
-                             third_party_commission_paid_at=str(item.get('thirdPartyCommissionPaidAt') or '').strip())
+                             rep_commission_amount=number(item.get('repCommissionAmount'), None))
                         for index, item in enumerate(items if isinstance(items, list) else []) if isinstance(item, dict)]
                 if rows:
                     connection.execute(LeadPayment.__table__.insert(), rows)
+                # The payouts that were on single payments become the lead's one payout.
+                payouts = [item for item in (items if isinstance(items, list) else [])
+                           if isinstance(item, dict) and number(item.get('thirdPartyCommissionAmount')) > 0]
+                if payouts:
+                    connection.execute(text("""UPDATE leads SET third_party_payout_to = :to, third_party_payout_amount = :amount,
+                                               third_party_payout_paid = :paid, third_party_payout_paid_at = :paid_at WHERE id = :id"""), {
+                        'id': lead_id,
+                        'to': next((str(item.get('thirdPartyCommissionTo')).strip() for item in payouts if item.get('thirdPartyCommissionTo')), ''),
+                        'amount': sum(number(item.get('thirdPartyCommissionAmount')) for item in payouts),
+                        'paid': all(item.get('thirdPartyCommissionPaid') for item in payouts),
+                        'paid_at': max(str(item.get('thirdPartyCommissionPaidAt') or '') for item in payouts)})
         # The list lives in the inventory tables; the old JSON draft copy is no longer read or written.
         connection.execute(text("""UPDATE lead_liveswitch SET details = (details::jsonb - 'inventory_draft')::text
                                    WHERE details LIKE '%"inventory_draft"%'"""))
