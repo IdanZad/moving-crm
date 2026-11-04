@@ -159,7 +159,7 @@ def _services_table(data, p, table, styles):
     if storage:
         answer = (f"Earliest delivery date: {storage.get('available_date') or 'Not answered'}"
                   + (f"\n{storage['paid_periods']} paid period(s)" if storage.get('valid') else ''))
-        terms = f"First {storage['free_days']} days free; ${storage['rate_per_cuft']:.2f} per cu ft per additional {storage['period_days']} days."
+        terms = f"First {storage['free_days']} days free; ${storage['rate_per_cuft']:.2f} per cu ft per additional {storage['period_days']} days or part thereof."
         body.append([service('Storage', terms), p(answer, 'NoteEstimate'), charge_cell('storage-periods')])
     shuttle = data.get('shuttle')
     if shuttle:
@@ -190,6 +190,7 @@ def _kit(size):
     styles.add(ParagraphStyle(name='RightEstimate', parent=styles['BodyEstimate'], alignment=TA_RIGHT))
     styles.add(ParagraphStyle(name='CompanyEstimate', parent=styles['SectionEstimate'], alignment=TA_RIGHT, spaceBefore=0))
     styles.add(ParagraphStyle(name='CompanyDetailsEstimate', parent=styles['NoteEstimate'], alignment=TA_RIGHT))
+    styles.add(ParagraphStyle(name='LabelEstimate', parent=styles['NoteEstimate'], fontName='Helvetica-Bold', fontSize=size - 1.5, leading=size * 1.1))
     def p(value, style='BodyEstimate'):
         return Paragraph(escape(str(value or '')).replace('\n', '<br/>'), styles[style])
     def table(body, widths, header=False):
@@ -228,20 +229,22 @@ def _summary(data, styles, p, table, link=True):
     # Every phone and every email: the main one first, then the extras.
     def contacts(kind):
         return '\n'.join(filter(None, [data.get(kind), *[row['value'] for row in data.get('contacts') or [] if row['kind'] == kind]]))
-    story += [p('Customer', 'SectionEstimate'),
-              table([[p('NAME\n' + data.get('name', '')), p('PHONE\n' + contacts('phone')), p('EMAIL\n' + contacts('email'))]], [150, 130, 242]),
-              p('Move details', 'SectionEstimate')]
+    # A small grey label over each value; empty ones are left out, and rows of three line up with each other.
+    def row(*fields):
+        fields = [(label, value) for label, value in fields if value]
+        return table([[[p(label, 'LabelEstimate'), p(value)] for label, value in fields]], [522 / max(len(fields), 3)] * len(fields))
     def stops(kind):
-        return '\n'.join(stop.get('address', '') for stop in data.get('stops', []) if stop.get('type') == kind) or 'None'
-    story.append(table([[p('PICKUP\n' + data.get('pickup', '')), p('PICKUP STOPS\n' + stops('pickup')),
-                         p('DELIVERY\n' + data.get('delivery', '')), p('DELIVERY STOPS\n' + stops('delivery'))]], [130, 131, 130, 131]))
+        return '\n'.join(stop.get('address', '') for stop in data.get('stops', []) if stop.get('type') == kind)
     # The earliest delivery date is the customer's storage answer, so it shows only where storage is offered.
     storage = data.get('storage')
-    dates = [p('PICKUP DATE\n' + str(data.get('move_date') or 'Not scheduled'))]
-    if storage:
-        dates.append(p('FIRST AVAILABLE DELIVERY DATE\n' + (storage.get('available_date') or 'Not answered')))
-    dates.append(p(('PARTIAL ESTIMATE\n' if any(c.get('pending') for c in estimate.get('charges', [])) else 'ESTIMATED TOTAL\n') + money(estimate['price'])))
-    story.append(table([dates], [150, 222, 150] if storage else [261, 261]))
+    story += [p('Customer', 'SectionEstimate'),
+              row(('NAME', data.get('name', '')), ('PHONE', contacts('phone')), ('EMAIL', contacts('email'))),
+              p('Move details', 'SectionEstimate'),
+              row(('PICKUP', data.get('pickup', '')), ('PICKUP STOPS', stops('pickup')),
+                  ('DELIVERY', data.get('delivery', '')), ('DELIVERY STOPS', stops('delivery'))),
+              row(('PICKUP DATE', str(data.get('move_date') or 'Not scheduled')),
+                  ('FIRST AVAILABLE DELIVERY DATE', storage and (storage.get('available_date') or 'Not answered')),
+                  ('PARTIAL ESTIMATE' if any(c.get('pending') for c in estimate.get('charges', [])) else 'ESTIMATED TOTAL', money(estimate['price'])))]
     for stop in data.get('stops', []):
         if stop.get('type') not in ('pickup', 'delivery'):
             story.append(p(f"Additional stop (unspecified): {stop.get('address', '')}"))
