@@ -276,12 +276,17 @@ def _summary(data, styles, p, table, link=True, title='MOVING ESTIMATE'):
                      else f"Minimum charge: ${rate[2]} | Each cu ft: ${rate[1]}")
         elif rate:
             basis = f"{float(estimate.get('cuft') or 0):,.2f} cuft @ ${rate[1]} per cuft"
+        shown = charge['total']
         if charge.get('discount_amount', 0) > 0:
             # A rep discount adds "| <title>: -$X" to the saved description; these two lines say it once.
             basis = re.sub(r' \| [^|]*: -\$[\d,]+\.\d{2}( \(new rate [^)]*\))?$', '', basis)
-            title = (data.get('discount_titles') or {}).get(charge.get('id')) or 'Discount'
-            basis += f"\nBefore discount: {money(charge['subtotal'])}\n{title} ({charge['discount_percent']:g}%): -{money(charge['discount_amount'])}"
-        charges.append([p(charge['name']), p(basis, 'NoteEstimate'), p('Pending' if charge.get('pending') else money(charge['total']), 'RightEstimate')])
+            if charge in package:
+                # The package lines show their price before the discount; the discount shows once, on their subtotal.
+                shown = charge['subtotal']
+            else:
+                title = (data.get('discount_titles') or {}).get(charge.get('id')) or 'Discount'
+                basis += f"\nBefore discount: {money(charge['subtotal'])}\n{title} ({charge['discount_percent']:g}%): -{money(charge['discount_amount'])}"
+        charges.append([p(charge['name']), p(basis, 'NoteEstimate'), p('Pending' if charge.get('pending') else money(shown), 'RightEstimate')])
         if package and charge is package[-1] and package_before > package_after:
             charges.append([p('Subtotal'), p(f"Before discount: {money(package_before)}\n{package_title}: -{money(package_before - package_after)}", 'NoteEstimate'),
                             p(money(package_after), 'RightEstimate')])

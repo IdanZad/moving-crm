@@ -1303,8 +1303,13 @@ def rep_discount_options(request: Request, access: PublicMoveAccess = Depends(ve
     lines = package_lines(job.charges)
     rules = [settings.get(row.id) for row in lines]
     before = sum((Decimal(bases[row.id]['base']) if row.id in bases else Decimal(str(row.total_cost or 0)) for row in lines), Decimal(0))
-    package = {'id': 'package', 'name': 'Subtotal', 'total': float(before), 'transportation': False, 'discount': None}
-    if lines and all(rules):
+    # transportation: the editor offers the price sheet's named discounts and the reduced cu-ft rate here.
+    package = {'id': 'package', 'name': 'Subtotal', 'total': float(before), 'transportation': True, 'discount': None}
+    transport = next((settings.get(row.id) for row in lines if row.name == 'Transportation charge'), None)
+    if transport and transport['type'] == 'rate':
+        # A reduced rate is on the transportation line only.
+        package['discount'] = transport
+    elif lines and all(rules):
         # The same percent on each line reads back as that percent; otherwise as the amount they take off together.
         same = all(rule['type'] == 'percent' and rule['value'] == rules[0]['value'] for rule in rules)
         after = sum((Decimal(str(row.total_cost or 0)) for row in lines), Decimal(0))
@@ -1334,8 +1339,6 @@ def save_rep_discount(body: RepDiscountInput, request: Request, access: PublicMo
         # A discount on the subtotal is saved on each of its lines: the same percent on each, or the amount split
         # by their prices before rep discounts, the last line taking the rounding.
         from rep_discounts import package_lines
-        if body.type not in ('amount', 'percent', 'total'):
-            raise HTTPException(422, 'The subtotal discount is an amount, a percentage or a new subtotal.')
         lines = package_lines(job.charges)
         if not lines:
             raise HTTPException(404, 'This estimate has no transportation lines to discount.')
@@ -1348,6 +1351,14 @@ def save_rep_discount(body: RepDiscountInput, request: Request, access: PublicMo
         if body.remove:
             for row in lines:
                 settings.pop(row.id, None)
+        elif body.type == 'rate':
+            # A reduced cu-ft rate changes the transportation line only; the other lines keep their price.
+            transport = next((row for row in lines if row.name == 'Transportation charge'), None)
+            if transport is None:
+                raise HTTPException(422, 'Cu-ft rate discounts apply to transportation only.')
+            for row in lines:
+                settings.pop(row.id, None)
+            settings[transport.id] = {'title': title, 'type': 'rate', 'value': str(body.value), 'volume': ceil(lead.volume or 0)}
         elif body.type == 'percent':
             for row in lines:
                 settings[row.id] = {'title': title, 'type': 'percent', 'value': str(body.value), 'volume': ceil(lead.volume or 0)}

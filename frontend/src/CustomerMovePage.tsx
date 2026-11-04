@@ -1386,6 +1386,11 @@ export default function CustomerMovePage() {
                       const packageDiscount = Math.round((packageBefore - packageAfter) * 100) / 100;
                       return rows.map((charge, idx) => {
                       const target = charge.target;
+                      // The package lines show their price before the discount, without its note; the discount is shown
+                      // and set once, on their subtotal.
+                      const inPackage = packageNames.includes(charge.name);
+                      const discounted = !charge.children && (charge.discount_amount || 0) > 0;
+                      const description = inPackage ? charge.description.replace(/ \| [^|]*: -\$[\d,]+\.\d{2}( \(new rate [^)]*\))?$/, '') : charge.description;
                       const subtotal = idx === lastPackage && (repPage || packageDiscount > 0) ? <div className="cm-estimate-charge-row cm-package-subtotal">
                         <div><strong>Subtotal</strong>{packageDiscount > 0 && <small>Discount: -{money(packageDiscount)} ({Math.round(packageDiscount / packageBefore * 1000) / 10}%)</small>}</div>
                         <div className="cm-line-price">
@@ -1398,7 +1403,7 @@ export default function CustomerMovePage() {
                       <div className="cm-estimate-charge-row">
                         <div>
                           <strong>{charge.name}{target && <button type="button" className="cm-charge-edit" aria-label={`Edit ${charge.name}`} title={`Edit ${charge.name}`} onClick={() => openChargeQuestion(target)}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="m16 3 5 5L8 21H3v-5L16 3Z M13 6l5 5"/></svg></button>}</strong>
-                          {charge.description && <small>{charge.description}</small>}
+                          {description && <small>{description}</small>}
                           {charge.children?.map((child, index) => <div key={index}>
                             {child.heading && <strong className="cm-charge-subheading">{child.heading}</strong>}
                             <div className="cm-stop-charge-detail" style={{paddingLeft: 12}}>
@@ -1415,9 +1420,9 @@ export default function CustomerMovePage() {
                           </div>)}
                         </div>
                         <div className="cm-line-price">
-                          {!charge.children && (charge.discount_amount || 0) > 0 && <del>{money(charge.subtotal || 0)}</del>}
-                          {charge.pending && !charge.children ? 'Pending' : new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(charge.total)}{charge.children && charge.pending && <small> + pending</small>}
-                          {repPage && charge.id && !charge.children && !charge.pending && <RepDiscounts base={base} headers={headers} onSaved={applyDiscount} chargeId={charge.id} chargeName={charge.name} />}
+                          {discounted && !inPackage && <del>{money(charge.subtotal || 0)}</del>}
+                          {charge.pending && !charge.children ? 'Pending' : new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(discounted && inPackage ? charge.subtotal || 0 : charge.total)}{charge.children && charge.pending && <small> + pending</small>}
+                          {repPage && charge.id && !charge.children && !charge.pending && !inPackage && <RepDiscounts base={base} headers={headers} onSaved={applyDiscount} chargeId={charge.id} chargeName={charge.name} />}
                         </div>
                       </div>
                       {subtotal}
