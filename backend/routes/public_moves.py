@@ -1296,9 +1296,22 @@ def rep_discount_options(request: Request, access: PublicMoveAccess = Depends(ve
     if not lead or not job or job.lead_id != lead.id:
         raise HTTPException(404, 'Move not found.')
     _, plan = infer_job_move_type(lead, job, db)
-    settings = json.loads(job.customer_packing_package or '{}').get('rep_discounts', {})
+    from rep_discounts import package_lines
+    selection = json.loads(job.customer_packing_package or '{}')
+    settings = selection.get('rep_discounts', {})
+    bases = selection.get('rep_discount_bases', {})
+    lines = package_lines(job.charges)
+    rules = [settings.get(row.id) for row in lines]
+    before = sum((Decimal(bases[row.id]['base']) if row.id in bases else Decimal(str(row.total_cost or 0)) for row in lines), Decimal(0))
+    package = {'id': 'package', 'name': 'Subtotal', 'total': float(before), 'transportation': False, 'discount': None}
+    if lines and all(rules):
+        # The same percent on each line reads back as that percent; otherwise as the amount they take off together.
+        same = all(rule['type'] == 'percent' and rule['value'] == rules[0]['value'] for rule in rules)
+        after = sum((Decimal(str(row.total_cost or 0)) for row in lines), Decimal(0))
+        package['discount'] = {'title': rules[0]['title'], 'type': 'percent' if same else 'amount',
+                               'value': float(rules[0]['value']) if same else float(before - after)}
     return {'presets': [{'title': r.title, 'type': r.category[9:], 'value': float(r.description)} for r in (plan.rules if plan else []) if r.category in ('discount_amount', 'discount_percent', 'discount_rate')],
-            'charges': [{'id': c.id, 'name': c.name, 'total': float(c.total_cost or 0), 'transportation': c.name == 'Transportation charge', 'discount': settings.get(c.id)} for c in job.charges]}
+            'charges': ([package] if lines else []) + [{'id': c.id, 'name': c.name, 'total': float(c.total_cost or 0), 'transportation': c.name == 'Transportation charge', 'discount': settings.get(c.id)} for c in job.charges]}
 
 
 @router.post('/api/public-moves/{access_id}/rep-discounts')
@@ -1315,11 +1328,46 @@ def save_rep_discount(body: RepDiscountInput, request: Request, access: PublicMo
         raise HTTPException(404, 'Move not found.')
     if price_is_locked(lead, job):
         raise HTTPException(409, 'The price is locked for this booked or closed move.')
+    if body.type == 'percent' and body.value > 100:
+        raise HTTPException(422, 'Percentage cannot exceed 100.')
+    if body.charge_id == 'package':
+        # A discount on the subtotal is saved on each of its lines: the same percent on each, or the amount split
+        # by their prices before rep discounts, the last line taking the rounding.
+        from rep_discounts import package_lines
+        if body.type not in ('amount', 'percent', 'total'):
+            raise HTTPException(422, 'The subtotal discount is an amount, a percentage or a new subtotal.')
+        lines = package_lines(job.charges)
+        if not lines:
+            raise HTTPException(404, 'This estimate has no transportation lines to discount.')
+        selection = json.loads(job.customer_packing_package or '{}')
+        settings = selection.setdefault('rep_discounts', {})
+        bases = selection.get('rep_discount_bases', {})
+        prices = [Decimal(bases[row.id]['base']) if row.id in bases else Decimal(str(row.total_cost or 0)) for row in lines]
+        subtotal = sum(prices, Decimal(0))
+        title = body.title.strip() or 'Discount'
+        if body.remove:
+            for row in lines:
+                settings.pop(row.id, None)
+        elif body.type == 'percent':
+            for row in lines:
+                settings[row.id] = {'title': title, 'type': 'percent', 'value': str(body.value), 'volume': ceil(lead.volume or 0)}
+        else:
+            amount = min(subtotal, max(Decimal(0), subtotal - body.value if body.type == 'total' else body.value))
+            left = amount
+            for index, (row, price) in enumerate(zip(lines, prices)):
+                share = left if index == len(lines) - 1 else (amount * price / subtotal).quantize(Decimal('.01')) if subtotal else Decimal(0)
+                left -= share
+                settings[row.id] = {'title': title, 'type': 'amount', 'value': str(share), 'volume': ceil(lead.volume or 0)}
+        job.customer_packing_package = json.dumps(selection)
+        _refresh_lead_estimated_total(lead.id, db)
+        db.commit()
+        db.refresh(job)
+        db.refresh(access)
+        price = customer_price(job)
+        return {'saved': True, 'price': str(price) if price is not None else None, 'charges': estimate_charges(job, individual_charges=True)}
     charge = db.query(LeadJobCharge).filter_by(id=body.charge_id, job_id=job.id).first()
     if not charge:
         raise HTTPException(404, 'Charge not found.')
-    if body.type == 'percent' and body.value > 100:
-        raise HTTPException(422, 'Percentage cannot exceed 100.')
     if body.type == 'rate' and charge.name != 'Transportation charge':
         raise HTTPException(422, 'Cu-ft rate discounts apply to transportation only.')
     selection = json.loads(job.customer_packing_package or '{}')

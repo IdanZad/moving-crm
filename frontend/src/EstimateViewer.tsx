@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import EstimateSigning, { type SignedEstimate } from './EstimateSigning';
+import EstimateSigning, { type SignResult } from './EstimateSigning';
 
 // The Re-sign answer: the signature removed, and the estimate's status without it.
 export type SignatureRemoved = { removed_id: string; signature_status: 'unsigned' | 'signed' | 'changed'; work_order_available: boolean };
@@ -15,7 +15,7 @@ export default function EstimateViewer({ base, headers, customerName, version, u
   // so what is signed next is what the estimate is now, even if it changed elsewhere.
   onSignatureRemoved: (result: SignatureRemoved) => void;
   // Called once the signature is saved: the page shows the estimate signed right away.
-  onSigned: (signature: SignedEstimate) => void;
+  onSigned: (signature: SignResult) => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [signing, setSigning] = useState(false);

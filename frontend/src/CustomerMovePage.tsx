@@ -13,7 +13,7 @@ import { groupTerms, needsTermAnswer, requiredQuestionTarget } from './customerQ
 import QuestionReferenceImages from "./QuestionReferenceImages";
 import { savedPhotos, storePhoto, removePhoto } from './photoDrafts';
 import ManualInventoryModal from "./ManualInventoryModal";
-import EstimateSigning, { type SignedEstimate } from './EstimateSigning';
+import EstimateSigning, { type SignResult } from './EstimateSigning';
 import EstimateViewer, { type SignatureRemoved } from './EstimateViewer';
 import InventoryViewer from './InventoryViewer';
 import type { EditableReportFile } from "./ReportFileList";
@@ -23,7 +23,7 @@ import CustomerPackingOptions, { type PackingPackage, type PackingSelection } fr
 import MeetingTimePicker from "./MeetingTimePicker";
 import { useCustomerUpdates } from './useCustomerUpdates';
 import { browserDrivingMeters, browserPricingLocation } from './googlePlaces';
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { readCustomerBootstrap } from './customerBootstrap';
 import { useParams } from "react-router-dom";
 import { API_BASE } from "./apiConfig";
@@ -673,7 +673,7 @@ export default function CustomerMovePage() {
   }
   // Show a signature on its report row as soon as the estimate viewer closes.
   // A new signature: the estimate is signed, the signature joins its report in the history, and the work order may show.
-  function showSignature(signature: SignedEstimate) {
+  function showSignature(signature: SignResult) {
     const row = { id: signature.id, name: signature.name, signed_at: signature.signed_at };
     setData(previous => previous ? {...previous, signature_status: 'signed', signature_requires_resign: false,
       work_order_available: signature.work_order_available,
@@ -1374,10 +1374,28 @@ export default function CustomerMovePage() {
                     <div className="cm-estimate-breakdown-title">Price breakdown</div>
                   </div>
                   <div className="cm-estimate-charges-grid">
-                    {groupedCharges().map((charge, idx) => {
+                    {(() => {
+                      // The transportation package: right after its lines, their subtotal, where the rep sets one discount
+                      // that is saved on each line. Customers see the subtotal when the lines have a discount.
+                      const packageNames = ['Transportation charge', 'Fuel surcharge', 'Origin destination & administration Fee'];
+                      const rows = groupedCharges();
+                      const lastPackage = rows.reduce((last, charge, index) => packageNames.includes(charge.name) ? index : last, -1);
+                      const packageRows = rows.filter(charge => packageNames.includes(charge.name));
+                      const packageAfter = packageRows.reduce((sum, charge) => sum + charge.total, 0);
+                      const packageBefore = packageRows.reduce((sum, charge) => sum + ((charge.discount_amount || 0) > 0 ? charge.subtotal || 0 : charge.total), 0);
+                      const packageDiscount = Math.round((packageBefore - packageAfter) * 100) / 100;
+                      return rows.map((charge, idx) => {
                       const target = charge.target;
-                      return (
-                      <div key={idx} className="cm-estimate-charge-row">
+                      const subtotal = idx === lastPackage && (repPage || packageDiscount > 0) ? <div className="cm-estimate-charge-row cm-package-subtotal">
+                        <div><strong>Subtotal</strong>{packageDiscount > 0 && <small>Discount: -{money(packageDiscount)} ({Math.round(packageDiscount / packageBefore * 1000) / 10}%)</small>}</div>
+                        <div className="cm-line-price">
+                          {packageDiscount > 0 && <del>{money(packageBefore)}</del>}
+                          <strong>{money(packageAfter)}</strong>
+                          {repPage && <RepDiscounts base={base} headers={headers} onSaved={applyDiscount} chargeId="package" chargeName="Subtotal" />}
+                        </div>
+                      </div> : null;
+                      return (<Fragment key={idx}>
+                      <div className="cm-estimate-charge-row">
                         <div>
                           <strong>{charge.name}{target && <button type="button" className="cm-charge-edit" aria-label={`Edit ${charge.name}`} title={`Edit ${charge.name}`} onClick={() => openChargeQuestion(target)}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="m16 3 5 5L8 21H3v-5L16 3Z M13 6l5 5"/></svg></button>}</strong>
                           {charge.description && <small>{charge.description}</small>}
@@ -1402,7 +1420,9 @@ export default function CustomerMovePage() {
                           {repPage && charge.id && !charge.children && !charge.pending && <RepDiscounts base={base} headers={headers} onSaved={applyDiscount} chargeId={charge.id} chargeName={charge.name} />}
                         </div>
                       </div>
-                    );})}
+                      {subtotal}
+                    </Fragment>);});
+                    })()}
                   </div>
                 </div>
               )}

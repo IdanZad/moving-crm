@@ -5,11 +5,11 @@ type Point = [number, number];
 type SignedEstimate = { id: string; name: string; signed_at: string; report_id?: string | null };
 
 // The sign answer: the new signature, its report, and whether the rep's work order is now available.
-export type SignedEstimate = { id: string; name: string; signed_at: string; report_id: string | null; work_order_available: boolean };
+export type SignResult = { id: string; name: string; signed_at: string; report_id: string | null; work_order_available: boolean };
 
 export default function EstimateSigning({ base, headers, customerName, disabled, version, onClose, onSigned, hideHistory = false, reportIds }: {
   base: string; headers: Record<string, string>; customerName: string; disabled: boolean; version: string; onClose: () => void;
-  onSigned?: (signature: SignedEstimate) => void; hideHistory?: boolean;
+  onSigned?: (signature: SignResult) => void; hideHistory?: boolean;
   /** Reports shown in report history; signatures for these appear on their report row instead of here. */
   reportIds?: string[];
 }) {
