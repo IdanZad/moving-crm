@@ -152,4 +152,9 @@ def test_work_order_adds_notes_and_payments_after_the_signature():
     text = ''.join(page.get_text() for page in pymupdf.open(stream=build_estimate_pdf(data, [], work_order=work_order), filetype='pdf'))
     assert 'WORK ORDER' in text
     assert text.index('Client signature') < text.index('Team notes') < text.index('Gate code') < text.index('Payments')
-    assert 'Balance due' in text and '$1,010.00' in text
+    assert 'Total estimate' in text and 'Balance due' in text and '$1,010.00' in text
+    assert 'FOREMAN NOTES' in text
+    # No notes: no Team notes section.
+    empty = dict(work_order, internal_notes='', foreman_notes=None)
+    text = ''.join(page.get_text() for page in pymupdf.open(stream=build_estimate_pdf(data, [], work_order=empty), filetype='pdf'))
+    assert 'Team notes' not in text and 'Payments' in text

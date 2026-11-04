@@ -329,20 +329,22 @@ def _summary_pages(data, size):
 
 def _work_order_section(work_order, estimate, p, table):
     """The work order's two sections after the signature: the team's notes (customer notes are already above), then the CRM payments."""
-    # Laid out like Customer and Move details: a small grey label over each value, side by side.
-    notes = [[p(label, 'LabelEstimate'), p((work_order.get(key) or '').strip() or 'None')]
-             for label, key in (('INTERNAL NOTES', 'internal_notes'), ('FOREMAN NOTES', 'foreman_notes'))]
-    story = [p('Team notes', 'SectionEstimate'), table([notes], [261, 261]), p('Payments', 'SectionEstimate')]
+    # Each note on its own row, a small grey label over it; a note left empty is left out, and so is the section.
+    notes = [[[p(label, 'LabelEstimate'), p(text)]] for label, text in
+             (('INTERNAL NOTES', (work_order.get('internal_notes') or '').strip()), ('FOREMAN NOTES', (work_order.get('foreman_notes') or '').strip())) if text]
+    story = [p('Team notes', 'SectionEstimate'), table(notes, [522])] if notes else []
+    story.append(p('Payments', 'SectionEstimate'))
     payments = work_order['payments']
     body = [[p('DATE'), p('TAKEN BY'), p('AMOUNT', 'RightEstimate')]]
     body += [[p(payment.get('paidAt') or 'Not set'), p(payment.get('takenByUser') or 'Not set'), p(money(payment['amount']), 'RightEstimate')]
              for payment in payments]
+    total = Decimal(str(estimate['price'] or 0))
     paid = sum(Decimal(str(payment['amount'])) for payment in payments)
-    body.append([p('Total paid'), '', p(money(paid), 'RightEstimate')])
-    body.append([p('Balance due'), '', p(money(Decimal(str(estimate['price'] or 0)) - paid), 'RightEstimate')])
+    totals = [('Total estimate', total), ('Total paid', paid), ('Balance due', total - paid)]
+    body += [[p(label), '', p(money(value), 'RightEstimate')] for label, value in totals]
     payment_table = table(body, [150, 277, 95], header=True)
-    payment_table.setStyle(TableStyle([('GRID', (0, 0), (-1, -1), .4, colors.HexColor('#bdc9d0')),
-                                       ('SPAN', (0, len(body) - 2), (1, len(body) - 2)), ('SPAN', (0, len(body) - 1), (1, len(body) - 1))]))
+    payment_table.setStyle(TableStyle([('GRID', (0, 0), (-1, -1), .4, colors.HexColor('#bdc9d0'))]
+                                      + [('SPAN', (0, len(body) - n), (1, len(body) - n)) for n in range(1, len(totals) + 1)]))
     story.append(payment_table)
     return story
 
