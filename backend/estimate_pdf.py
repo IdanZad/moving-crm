@@ -164,6 +164,7 @@ def _services_table(data, p, table, styles):
     shuttle = data.get('shuttle')
     if shuttle:
         answer = ('Shuttle required for this delivery area' if shuttle['automatic']
+                  else 'Semi-trailer can park at delivery: Not sure - shuttle charge applies if needed' if shuttle.get('unknown')
                   else {True: 'Semi-trailer can park at delivery: Yes', False: 'Semi-trailer can park at delivery: No - shuttle required'}.get(shuttle.get('answer'), 'Not answered'))
         body.append([service('Delivery truck access', None), p(answer, 'NoteEstimate'), charge_cell('shuttle')])
     # Lines with no answer of their own: packing, materials, item services, mileage fees.

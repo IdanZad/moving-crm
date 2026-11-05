@@ -1646,14 +1646,15 @@ def save_customer_packing(body: CustomerPackingPatch, access: PublicMoveAccess =
         return saved_response()
     if body.change and body.change.kind == 'shuttle':
         from routes.pricing import customer_shuttle, sync_customer_shuttle_charge
-        if 'enabled' not in body.change.model_fields_set:
+        if 'enabled' not in body.change.model_fields_set and not body.change.access_unknown:
             raise HTTPException(400, 'Choose an answer for delivery truck access.')
         option = customer_shuttle(lead, job, db)
         if not option or option['automatic'] or body.change.revision != option['revision']:
             raise HTTPException(409, 'Delivery access requirements changed. Refresh your estimate.')
         selection = json.loads(job.customer_packing_package or '{}')
         previous_shuttle = selection.get('shuttle', {})
-        selection['shuttle'] = {'answer': body.change.enabled, 'revision': option['revision']}
+        selection['shuttle'] = ({'answer': None, 'unknown': True, 'revision': option['revision']} if body.change.access_unknown
+                                else {'answer': body.change.enabled, 'revision': option['revision']})
         if previous_shuttle != selection['shuttle']:
             selection.get('long_carry', {}).pop('delivery', None)
         job.customer_packing_package = json.dumps(selection)

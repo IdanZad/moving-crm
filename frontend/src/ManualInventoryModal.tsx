@@ -494,7 +494,8 @@ export default function ManualInventoryModal({ loadCatalog, searchCatalog, submi
     } catch (err) { setError(err instanceof Error ? err.message : 'Could not load inventory. Please try again.'); }
     finally { setPdfBusy(false); }
   }
-  async function save(calculate = true) {
+  // Done, the close button and Escape all do the same: save the list and update the estimate.
+  async function save() {
     if (busy) return;
     if (!catalog) { onClose(); return; }
     if (rooms.some(r => !r.name.trim())) { setError('Enter a name for each room before closing.'); return; }
@@ -505,7 +506,7 @@ export default function ManualInventoryModal({ loadCatalog, searchCatalog, submi
         if (inFlight.current !== rooms) pending.current = rooms;
         await flush();
       }
-      if (calculate && savedChanges.current) {
+      if (savedChanges.current) {
         setFinishing(true);
         await onDone();
         savedChanges.current = false;
@@ -515,7 +516,7 @@ export default function ManualInventoryModal({ loadCatalog, searchCatalog, submi
     finally { setFinishing(false); setBusy(false); }
   }
   return <div className="cm-modal-overlay" style={visible ? undefined : {display: 'none'}} aria-hidden={!visible}><div className="mi-modal" ref={modal} tabIndex={-1} role="dialog" aria-modal="true" aria-busy={busy} aria-labelledby="mi-title" onKeyDown={event => {
-    if (event.key === 'Escape' && !busy) { event.preventDefault(); void save(false); }
+    if (event.key === 'Escape' && !busy) { event.preventDefault(); void save(); }
     if (event.key === 'Tab') {
       const nodes = modal.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled)');
       if (!nodes?.length) return;
@@ -524,7 +525,7 @@ export default function ManualInventoryModal({ loadCatalog, searchCatalog, submi
       else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
     }
   }}>
-    <header><div><span className="cm-eyebrow">YOUR INVENTORY</span><h2 id="mi-title">Your home, room by room</h2></div><div className="mi-header-actions"><button type="button" className="slds-button" disabled={busy || pdfBusy || !catalog || !rooms.length || rooms.some(r => !r.name.trim())} title={pdfBusy ? "Preparing PDF..." : "View inventory PDF"} aria-label={pdfBusy ? "Preparing inventory PDF" : "View inventory PDF"} aria-busy={pdfBusy} onClick={() => void download()}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h6"/></svg></button><button type="button" className="slds-button" disabled={busy || !catalog || !rooms.length} title="Clear inventory" aria-label="Clear inventory" onClick={() => { setRooms([]); setSelected(''); setCustomOpen(false); }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/></svg></button><button type="button" className="slds-button" disabled={busy} onClick={() => void save(false)} aria-label="Save and close inventory">&times;</button></div></header>
+    <header><div><span className="cm-eyebrow">YOUR INVENTORY</span><h2 id="mi-title">Your home, room by room</h2></div><div className="mi-header-actions"><button type="button" className="slds-button" disabled={busy || pdfBusy || !catalog || !rooms.length || rooms.some(r => !r.name.trim())} title={pdfBusy ? "Preparing PDF..." : "View inventory PDF"} aria-label={pdfBusy ? "Preparing inventory PDF" : "View inventory PDF"} aria-busy={pdfBusy} onClick={() => void download()}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h6"/></svg></button><button type="button" className="slds-button" disabled={busy || !catalog || !rooms.length} title="Clear inventory" aria-label="Clear inventory" onClick={() => { setRooms([]); setSelected(''); setCustomOpen(false); }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/></svg></button><button type="button" className="slds-button" disabled={busy} onClick={() => void save()} aria-label="Save and close inventory">&times;</button></div></header>
     <div className="mi-totals" aria-live="polite"><span>{rooms.length} rooms</span><span>{rooms.reduce((sum, r) => sum + count(r), 0)} items &middot; {rooms.reduce((sum, r) => sum + pieces(r), 0)} pieces &middot; {totalBoxes} boxes</span><strong>{number(cuft)} cu ft</strong><span>{number(weight)} lb</span></div>
     {draftError && <p className="mi-error" role="alert">{draftError}</p>}
     {error && <p className="mi-error" role="alert">{error}</p>}
