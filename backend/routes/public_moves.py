@@ -570,7 +570,8 @@ def _group_box_packing_charges(charges):
     result = []
     groups = {}
     for charge in charges:
-        match = re.fullmatch(r'Movers pack (\d+) of (\d+) boxes; labor and materials included', charge['description'])
+        # A discounted box line has the rep discount's "| <title>: -$X" after it; it combines all the same.
+        match = re.fullmatch(r'Movers pack (\d+) of (\d+) boxes; labor and materials included( \| [^|]*: -\$[\d,]+\.\d{2})?', charge['description'])
         if not match:
             result.append(charge)
             continue
