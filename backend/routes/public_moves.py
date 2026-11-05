@@ -1000,6 +1000,9 @@ def _estimate_document(access, db):
         raise HTTPException(409, 'Your inventory and estimate must be ready before downloading.')
     if not rows:
         raise HTTPException(409, 'There is no inventory to include in this estimate.')
+    # The date it was prepared, in the moving company's time zone (the lead is already loaded; no query).
+    company = _company_for(db.get(Lead, access.lead_id), db)
+    data['prepared_at'] = datetime.now(ZoneInfo(company.timezone if company else 'America/New_York')).strftime('%B %d, %Y')
     return data, rows
 
 
@@ -1070,7 +1073,6 @@ def prepare_estimate_signature(access: PublicMoveAccess = Depends(verified), db:
     pending = [c.get('name') or 'Unnamed charge' for c in data['estimate'].get('charges', []) if c.get('pending')]
     if pending:
         raise HTTPException(409, 'These charges still need calculation: ' + ', '.join(pending) + '.')
-    data['prepared_at'] = datetime.now(timezone.utc).strftime('%B %d, %Y (UTC)')
     record_id = str(uuid4())  # Returned as is: reading it from the row after the commit would load the row again.
     db.add(EstimateSignature(id=record_id, lead_id=access.lead_id, job_id=access.job_id,
         report_id=(data.get('spark') or {}).get('id'),
