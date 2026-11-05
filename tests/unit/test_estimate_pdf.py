@@ -106,8 +106,10 @@ def test_fully_discounted_stairs_moves_from_breakdown_to_details():
     doc=pymupdf.open(stream=build_estimate_pdf(data,[]),filetype='pdf')
     text=' '.join(' '.join(page.get_text().split()) for page in doc)
     # Not in the page-one breakdown; its row in the services table shows the answer and the discounted charge.
+    # The breakdown adds the fees' discounts up under their total.
     assert 'Pickup stairs' not in text and 'Before discount' not in text
     assert 'Stairs - pickup' in text and '2 flights $57.20 $0.00 Discount: -$57.20 (100%)' in text
+    assert 'Discount -$57.20' in text and '% off' not in text
 
 
 def test_material_price_list_is_appended_with_no_packing_and_does_not_change_total():
@@ -151,7 +153,8 @@ def test_work_order_adds_notes_and_payments_after_the_signature():
                   'internal_notes': 'Gate code', 'foreman_notes': 'Two trucks'}
     text = ''.join(page.get_text() for page in pymupdf.open(stream=build_estimate_pdf(data, [], work_order=work_order), filetype='pdf'))
     assert 'WORK ORDER' in text
-    assert text.index('Client signature') < text.index('Team notes') < text.index('Gate code') < text.index('Payments')
+    assert 'Client signature' not in text
+    assert text.index('TOTAL ESTIMATED PRICE') < text.index('Team notes') < text.index('Gate code') < text.index('Payments')
     assert 'Total estimate' in text and 'Balance due' in text and '$1,010.00' in text
     assert 'FOREMAN NOTES' in text
     # No notes: no Team notes section.

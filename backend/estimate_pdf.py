@@ -92,6 +92,11 @@ def _is_service(charge):
         return bool(charge.get('id'))
 
 
+def _before_discount(charge):
+    """A line's price before its discount, for the fees total in the price breakdown."""
+    return float(charge.get('subtotal') or 0) if charge.get('discount_amount') else float(charge.get('total') or 0)
+
+
 def _services_total(estimate):
     lines = [charge for charge in estimate.get('charges') or [] if _is_service(charge)]
     return lines, sum(float(charge.get('total') or 0) for charge in lines), any(charge.get('pending') for charge in lines)
@@ -211,7 +216,7 @@ def _template(output, company):
                              bottomMargin=53, title='Moving estimate', author=company.get('name') or '')
 
 
-def _summary(data, styles, p, table, link=True, title='MOVING ESTIMATE'):
+def _summary(data, styles, p, table, link=True, title='MOVING ESTIMATE', signature=True):
     """Details, price breakdown, customer note and signature: the part that belongs on page one."""
     company = data.get('company_details') or {}
     estimate = data['estimate']
@@ -289,8 +294,11 @@ def _summary(data, styles, p, table, link=True, title='MOVING ESTIMATE'):
                 basis += f"\nBefore discount: {money(charge['subtotal'])}\n{title} ({charge['discount_percent']:g}%): -{money(charge['discount_amount'])}"
         charges.append([p(charge['name']), p(basis, 'NoteEstimate'), p('Pending' if charge.get('pending') else money(shown), 'RightEstimate')])
         if package and charge is package[-1] and package_before > package_after:
-            charges.append([p('Subtotal'), p(f"Before discount: {money(package_before)}\n{package_title}: -{money(package_before - package_after)}", 'NoteEstimate'),
-                            p(money(package_after), 'RightEstimate')])
+            # The discount on its own row (name, percent, amount), then the subtotal: the original crossed out, then the new price.
+            discount = package_before - package_after
+            charges.append([p(package_title), p(f"{discount / package_before * 100:.2f}".rstrip('0').rstrip('.') + '% off', 'NoteEstimate'),
+                            p('-' + money(discount), 'RightEstimate')])
+            charges.append([p('Subtotal'), '', Paragraph(f"<strike>{money(package_before)}</strike>  <b>{money(package_after)}</b>", styles['RightEstimate'])])
     service_lines, service_total, service_pending = _services_total(estimate)
     if service_lines:
         # A link to the services table further down.
@@ -298,8 +306,16 @@ def _summary(data, styles, p, table, link=True, title='MOVING ESTIMATE'):
         text = 'See Additional services and fees'
         text = f'<a href="#additional-services" color="#1a5fb4"><u>{text}</u></a>' if link else f'<u>{text}</u>'
         link = Paragraph(text + (' (includes pending charges)' if service_pending else ''), styles['NoteEstimate'])
-        charges.append([p('Additional services and fees'), link,
-                        p(money(service_total), 'RightEstimate')])
+        service_before = sum(_before_discount(charge) for charge in service_lines)
+        if service_before > service_total + 0.004:
+            # The fees total, the original crossed out, then their own discounts added up (each fee keeps its own, in the
+            # table), so the row has no name or percent of its own.
+            charges.append([p('Additional services and fees'), link,
+                            Paragraph(f"<strike>{money(service_before)}</strike>  <b>{money(service_total)}</b>", styles['RightEstimate'])])
+            charges.append([p('Discount'), '', p('-' + money(service_before - service_total), 'RightEstimate')])
+        else:
+            charges.append([p('Additional services and fees'), link,
+                            p(money(service_total), 'RightEstimate')])
     if len(charges) == 1:
         charges.append([p('Moving estimate'), p('Not specified', 'NoteEstimate'), p(money(estimate['price']), 'RightEstimate')])
     charge_table = table(charges, [180, 247, 95], header=True)
@@ -311,7 +327,8 @@ def _summary(data, styles, p, table, link=True, title='MOVING ESTIMATE'):
     note = (data.get('customer_notes') or '').strip()
     if note:
         story += [p('Notes', 'SectionEstimate'), p(note)]
-    story.append(_signature_block(data, p))
+    if signature:
+        story.append(_signature_block(data, p))
     return story
 
 
@@ -374,7 +391,7 @@ def build_estimate_pdf(data, rows, work_order=None):
     company = data.get('company_details') or {}
     package = data.get('packing_package') or {}
     title = 'WORK ORDER' if work_order else 'MOVING ESTIMATE'
-    story = _summary(data, styles, p, table, title=title)
+    story = _summary(data, styles, p, table, title=title, signature=not work_order)
     if work_order:
         story += _work_order_section(work_order, data['estimate'], p, table)
     story.append(p('Declared inventory', 'SectionEstimate'))
@@ -463,7 +480,7 @@ def build_estimate_pdf(data, rows, work_order=None):
                          p(money(material.get('packing_price')), 'RightEstimate')])
         story.append(table(body, [228, 104, 95, 95], header=True))
     from company_documents import pdf_document_flowables
-    for document in data.get('documents', []):
+    for document in [] if work_order else data.get('documents', []):
         story.append(PageBreak())
         story.extend(pdf_document_flowables(document, styles))
     def footer(canvas, doc):
