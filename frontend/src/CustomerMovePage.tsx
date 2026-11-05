@@ -56,7 +56,7 @@ type Details = {
   item_questions?: ItemQuestion[];
   link_sms?: LinkSms | null;
   list_changed?: boolean;
-  combined_inventory?: {name:string;room?:string;amount?:number;quantity?:number;cuft?:number;unit_cuft?:number;reference_name?:string}[];
+  combined_inventory?: {name:string;room?:string;amount?:number;quantity?:number;cuft?:number;unit_cuft?:number;reference_name?:string;going?:boolean}[];
   report_history?: ReportRun[];
   signature_status?: 'unsigned' | 'signed' | 'changed';
   // Rep pages only: the estimate is signed.
@@ -871,9 +871,9 @@ export default function CustomerMovePage() {
   const sectionReady = (...names: PageSection[]) => names.every(name => sections[name].ready && !sections[name].error);
   const sectionRequests = useRef<Record<string, number>>({});
   const pricingLoading = sections.pricing.loading;
-  // The item list summary, from the current inventory.
-  const summaryRows = data?.combined_inventory || [];
-  const inventorySummary = summaryRows.length ? {
+  // The item list summary, from the current inventory; items not going count toward nothing.
+  const summaryRows = (data?.combined_inventory || []).filter(row => row.going !== false);
+  const inventorySummary = data?.combined_inventory?.length ? {
     items: summaryRows.reduce((total, row) => total + Number(row.amount ?? row.quantity ?? 0), 0),
     pieces: summaryRows.reduce((total, row) => total + Number(row.amount ?? row.quantity ?? 0) * piecesPerItem(row.name), 0),
     boxes: summaryRows.reduce((total, row) => total + boxQuantity(row.name, Number(row.amount ?? row.quantity ?? 0)), 0),

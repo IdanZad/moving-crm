@@ -421,10 +421,15 @@ def build_estimate_pdf(data, rows, work_order=None):
     for entry in entries_all:
         rooms[entry['room']].append(entry)
     def totals(entries):
-        going = sum(e['quantity'] for e in entries if not e['excluded'])
+        from inventory_counts import is_box, pieces_per_item
+        going = [e for e in entries if not e['excluded']]
         not_going = sum(e['quantity'] for e in entries if e['excluded'])
         volume = sum(e['cuft'] for e in entries)
-        return f"Going: {going}   |   Not going: {not_going}   |   Volume: {volume:,.2f} cu ft"
+        # Pieces and boxes count only what is going, as on the customer page.
+        pieces = sum(e['quantity'] * pieces_per_item(e['name']) for e in going)
+        boxes = sum(e['quantity'] for e in going if is_box(e['name']))
+        return (f"Going: {sum(e['quantity'] for e in going)}   |   Pieces: {pieces}   |   Boxes: {boxes}   |   "
+                f"Not going: {not_going}   |   Volume: {volume:,.2f} cu ft")
     for room, entries in rooms.items():
         body = [[p(room + '\n' + totals(entries)), '', '', ''],
                 [p(label, 'NoteEstimate') for label in ['ITEM', 'GOING', 'NOT GOING', 'CU FT']]]

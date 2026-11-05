@@ -425,11 +425,13 @@ export default function ManualInventoryModal({ loadCatalog, searchCatalog, submi
     return () => { active = false; window.clearTimeout(timer); };
   }, [catalogSearch]);
   const total = (room: Room, field: 'cuft' | 'weight') => Object.entries(room.items).reduce((sum, [id, qty]) => sum + (items.get(id)?.[field] || 0) * qty, 0) + (room.custom_items || []).reduce((sum, item) => sum + (item.going === false ? 0 : (field === 'cuft' ? item.cuft : item.unit_weight || 0) * item.quantity), 0);
-  const count = (room: Room) => Object.values(room.items).reduce((sum, qty) => sum + qty, 0) + (room.custom_items || []).reduce((sum, item) => sum + item.quantity, 0);
+  // Items not going count toward nothing, like their volume.
+  const goingItems = (room: Room) => (room.custom_items || []).filter(item => item.going !== false);
+  const count = (room: Room) => Object.values(room.items).reduce((sum, qty) => sum + qty, 0) + goingItems(room).reduce((sum, item) => sum + item.quantity, 0);
   const pieces = (room: Room) => Object.entries(room.items).reduce((sum, [id, qty]) => sum + qty * piecesPerItem(room.item_names?.[id] || items.get(id)?.name || ''), 0)
-    + (room.custom_items || []).reduce((sum, item) => sum + item.quantity * piecesPerItem(item.name), 0);
+    + goingItems(room).reduce((sum, item) => sum + item.quantity * piecesPerItem(item.name), 0);
   const boxes = (room: Room) => Object.entries(room.items).reduce((sum, [id, qty]) => sum + boxQuantity(room.item_names?.[id] || items.get(id)?.name || '', qty), 0)
-    + (room.custom_items || []).reduce((sum, item) => sum + boxQuantity(item.name, item.quantity), 0);
+    + goingItems(room).reduce((sum, item) => sum + boxQuantity(item.name, item.quantity), 0);
   const totalBoxes = rooms.reduce((sum, r) => sum + boxes(r), 0);
   const cuft = rooms.reduce((sum, room) => sum + total(room, 'cuft'), 0);
   const weight = rooms.reduce((sum, room) => sum + total(room, 'weight'), 0);
