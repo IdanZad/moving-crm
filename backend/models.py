@@ -7,6 +7,27 @@ from sqlalchemy import Column, String, Text, DateTime, Date, ForeignKey, Foreign
 from sqlalchemy.orm import declarative_base, relationship, validates
 
 from company_colors import resolve_company_color
+
+
+def luhn_digit(digits):
+    """The Luhn check digit for a string of digits (as on card numbers): catches a mistyped digit or two swapped ones."""
+    total = 0
+    for index, digit in enumerate(reversed(digits)):
+        value = int(digit) * (2 if index % 2 == 0 else 1)
+        total += value - 9 if value > 9 else value
+    return str((10 - total % 10) % 10)
+
+
+def generate_lead_number():
+    """A lead's number: 10 random digits (not counting up, so it tells nothing and cannot be guessed) and a check digit."""
+    import secrets
+    digits = str(secrets.randbelow(9_000_000_000) + 1_000_000_000)
+    return digits + luhn_digit(digits)
+
+
+def job_number(lead, job):
+    """A job's number: its lead's number and the job's place among the lead's jobs, such as 48213075526-1."""
+    return f"{lead.number}-{job.job_order}"
 from move_types import normalize_move_type
 
 Base = declarative_base()
@@ -300,6 +321,8 @@ class Lead(Base):
     facebook_user_id = Column(String(100), index=True)
     leadgen_id = Column(String(100), index=True)
     quote_number = Column(String(100), nullable=True)
+    # The lead's own number (generate_lead_number); its jobs are numbered from it (job_number).
+    number = Column(String(11), unique=True, nullable=False, default=generate_lead_number)
     smartmoving_id = Column(String(100), index=True, unique=True)
     inbox_url = Column(Text)
     notes = Column(Text)
@@ -380,6 +403,7 @@ class Lead(Base):
             "aircall_number_id": self.company.aircall_number_id if self.company else "",
             "leadgen_id": self.leadgen_id or "",
             "quote_number": self.quote_number or "",
+            "number": self.number or "",
             "smartmoving_id": self.smartmoving_id or "",
             "full_name": self.full_name or "",
             "email": self.email or "",
@@ -638,6 +662,7 @@ class LeadJob(Base):
             "company_id": self.company_id,
             "company_name": self.company.name if self.company else "",
             "job_order": self.job_order,
+            "number": job_number(self.lead, self),
             "pickup_zip": self.pickup_zip or "",
             "delivery_zip": self.delivery_zip or "",
             "move_date": self.move_date or "",

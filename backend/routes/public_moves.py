@@ -32,7 +32,7 @@ from config import get_config
 from company_colors import resolve_company_color
 from database import get_db
 from libs.aircall.client import find_number_id, send_sms
-from models import Lead, LeadJob, Company, User, LeadAttachment, LeadLiveSwitch, PublicMoveAccess, PublicMoveSession, PublicMoveRepVerification, PublicMoveUpload, PublicMoveRate, PublicMovePendingUpload, WalkthroughRequest, LeadPayment, EstimateSignature
+from models import Lead, LeadJob, Company, User, LeadAttachment, LeadLiveSwitch, PublicMoveAccess, PublicMoveSession, PublicMoveRepVerification, PublicMoveUpload, PublicMoveRate, PublicMovePendingUpload, WalkthroughRequest, LeadPayment, EstimateSignature, job_number
 from public_move_security import digest, secret_digest, link_token, contact_fingerprint, normalize_phone, file_type
 from public_move_sync import queue_files, sync_status
 from routes.leads import LeadContactInput, save_lead_contacts, _get_visible_lead_or_404, _get_user_company_ids, _persist_job_route, _read_job_route, _upload_attachment_bytes_to_s3, _delete_s3_url, _safe_attachment_name
@@ -868,7 +868,8 @@ def _move_details(access, db, *, refresh_report=True, include_pricing=True, pric
         # None without extras, so copies signed before extras existed still match.
         details = dict(pricing_data, name=lead.full_name, phone=lead.phone or '', email=lead.email or '',
             contacts=[{'kind': row.kind, 'value': row.value} for row in lead.contacts] or None,
-            move_date=job.move_date or '', pickup=pickup, delivery=delivery, stops=_typed_stops(job, stops),
+            order_number=job_number(lead, job), move_date=job.move_date or '', pickup=pickup, delivery=delivery,
+            stops=_typed_stops(job, stops),
             company_details=company_data, item_services=inventory_selectors(access, db),
             documents=documents_for(lead, job, db))
         rows = resolve_catalog_names(conv_details.get('question_original_rows', conv_details.get('spark_inventory_snapshot', [])), db)
@@ -1196,7 +1197,7 @@ def _bill_of_lading(access, db):
         'pickup_address': data.get('pickup'), 'delivery_address': data.get('delivery'),
         'stops': '; '.join(stop.get('address', '') for stop in data.get('stops') or []),
         'pickup_date': data.get('move_date'), 'first_available_delivery_date': (data.get('storage') or {}).get('available_date'),
-        'order_number': f"{lead.quote_number}-{job.job_order}" if lead.quote_number else str(job.job_order),
+        'order_number': job_number(lead, job),
         'total_estimate': money(estimate.get('price')), 'minimum_cuft': f"{volume} cu ft" if volume else '',
         'minimum_charge': money(sum(Decimal(str(charge.get('total') or 0)) for charge in package)) if package else '',
         'services_ordered': ', '.join(charge['name'] for charge in charges if _is_service(charge) and charge.get('total')),

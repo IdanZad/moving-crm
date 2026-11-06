@@ -252,7 +252,9 @@ def _summary(data, styles, p, table, link=True, title='MOVING ESTIMATE', signatu
                                 ('RIGHTPADDING', (0, 0), (-1, -1), 0)]))
     story = [header,
              Spacer(1, 12), Paragraph(title, styles['Title']),
-             p('Prepared ' + (data.get('prepared_at') or datetime.now(timezone.utc).strftime('%B %d, %Y (UTC)')), 'NoteEstimate')]
+             p(' | '.join(filter(None, [data.get('order_number') and f"Order No. {data['order_number']}",
+                                        'Prepared ' + (data.get('prepared_at') or datetime.now(timezone.utc).strftime('%B %d, %Y (UTC)'))])),
+               'NoteEstimate')]
     # Every phone and every email: the main one first, then the extras.
     def contacts(kind):
         return '\n'.join(filter(None, [data.get(kind), *[row['value'] for row in data.get('contacts') or [] if row['kind'] == kind]]))

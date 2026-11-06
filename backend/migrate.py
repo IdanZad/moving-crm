@@ -162,6 +162,26 @@ def migrate() -> None:
         for column, kind in (('third_party_payout_to', 'VARCHAR(255)'), ('third_party_payout_amount', 'NUMERIC(12, 2)'),
                              ('third_party_payout_paid', 'BOOLEAN'), ('third_party_payout_paid_at', 'VARCHAR(40)')):
             add_column(connection, 'leads', column, kind)
+        # Each lead's number: leads from before it get one now, all different, then it is required and unique.
+        add_column(connection, 'leads', 'number', 'VARCHAR(11)')
+        unnumbered = connection.execute(text('SELECT id FROM leads WHERE number IS NULL')).scalars().all()
+        if unnumbered:
+            from models import generate_lead_number
+            taken = set(connection.execute(text('SELECT number FROM leads WHERE number IS NOT NULL')).scalars())
+            numbers = []
+            for lead_id in unnumbered:
+                number = generate_lead_number()
+                while number in taken:
+                    number = generate_lead_number()
+                taken.add(number)
+                numbers.append({'id': lead_id, 'number': number})
+            connection.execute(text('UPDATE leads SET number = :number WHERE id = :id'), numbers)
+        # Only when not done yet: each of these locks the whole table, even when there is nothing to change.
+        if connection.execute(text("SELECT 1 FROM information_schema.columns WHERE table_name = 'leads' "
+                                   "AND column_name = 'number' AND is_nullable = 'YES'")).first():
+            connection.execute(text('ALTER TABLE leads ALTER COLUMN number SET NOT NULL'))
+        if not connection.execute(text("SELECT 1 FROM pg_indexes WHERE tablename = 'leads' AND indexname = 'leads_number_key'")).first():
+            connection.execute(text('CREATE UNIQUE INDEX leads_number_key ON leads (number)'))
         from models import LeadPayment
         from sqlalchemy import inspect as inspect_schema
         payments_table_existed = inspect_schema(connection).has_table('lead_payments')
