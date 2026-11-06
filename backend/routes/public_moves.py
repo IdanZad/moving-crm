@@ -1183,11 +1183,13 @@ def _bill_of_lading(access, db):
     data = json.loads(signed.snapshot)['data']
     estimate = data.get('estimate') or {}
     charges = estimate.get('charges') or []
-    # The minimums the customer signed for: the estimate's volume (as the estimate shows it, rounded up), and the
-    # transportation package's three lines after their discount (the estimate's Subtotal), without the other fees.
+    # The minimums the customer signed for: the estimate's volume (rounded up, as the estimate shows it), never below
+    # the minimum billable volume the estimate states; and the transportation package's three lines after their
+    # discount (the estimate's Subtotal), without the other fees.
     from math import ceil
     from rep_discounts import PACKAGE_LINES
-    volume = ceil(float(estimate.get('cuft') or 0))
+    volume = max(ceil(float(estimate.get('cuft') or 0)),
+                 ceil(float((data.get('packing_package') or {}).get('minimum_cubic_feet') or 0)))
     package = [charge for charge in charges if charge.get('name') in PACKAGE_LINES]
     values = {
         'customer_name': data.get('name'), 'customer_phone': data.get('phone'), 'customer_email': data.get('email'),
@@ -1217,17 +1219,19 @@ def _bill_of_lading_status(access, db, estimate_signed):
         return {'signed': False}
     from bill_of_lading_pdf import SIGN_SPOTS
     found = _bill_of_lading(access, db)
-    return {'signed': bool(found) and len(_signed_spots(found[0].id, found[4], db)) == SIGN_SPOTS}
+    return {'signed': bool(found) and len(_signed_spots(found[0], found[4], db)) == SIGN_SPOTS}
 
 
-def _signed_spots(estimate_signature_id, fingerprint, db):
+def _signed_spots(estimate, fingerprint, db):
     """The Bill of Lading's signed spots, {spot: its signature row}: of the version signed in full, or else of the
-    version shown now (fingerprint); spots signed on an earlier version are signed again."""
+    version shown now (fingerprint); spots signed on an earlier version are signed again. Only signatures since the
+    estimate's current signing count: removing the estimate's signature cancels the Bill of Lading's, even when the
+    same estimate is signed again."""
     from bill_of_lading_pdf import SIGN_SPOTS
     from models import BillOfLadingSignature
     versions = {}
-    for row in db.query(BillOfLadingSignature).filter_by(estimate_signature_id=estimate_signature_id).order_by(
-            BillOfLadingSignature.signed_at):
+    for row in db.query(BillOfLadingSignature).filter(BillOfLadingSignature.estimate_signature_id == estimate.id,
+            BillOfLadingSignature.signed_at >= estimate.signed_at).order_by(BillOfLadingSignature.signed_at):
         versions.setdefault(row.content_hash, {})[row.spot] = row
     return next((spots for spots in versions.values() if len(spots) == SIGN_SPOTS), versions.get(fingerprint, {}))
 
@@ -1241,7 +1245,7 @@ def bill_of_lading_pdf(access: PublicMoveAccess = Depends(verified), db: Session
     if not found:
         raise HTTPException(409, 'The Bill of Lading is ready once the estimate is signed.')
     estimate, company, values, documents, fingerprint = found
-    spots = _signed_spots(estimate.id, fingerprint, db)
+    spots = _signed_spots(estimate, fingerprint, db)
     headers = {'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff', 'X-Revision': fingerprint,
                'Access-Control-Expose-Headers': 'X-Revision, X-Signed', 'X-Signed': '1' if len(spots) == SIGN_SPOTS else '0'}
     # The latest signing's PDF carries every spot signed so far.
@@ -1265,7 +1269,7 @@ def sign_bill_of_lading(spot: int, revision: str, body: SigningInput, access: Pu
     estimate, company, values, documents, fingerprint = found
     if revision != fingerprint:
         raise HTTPException(409, 'The Bill of Lading changed while you were reviewing it. Close it and open it again to sign.')
-    spots = _signed_spots(estimate.id, fingerprint, db)
+    spots = _signed_spots(estimate, fingerprint, db)
     if spot in spots or len(spots) == SIGN_SPOTS:
         existing = spots.get(spot) or max(spots.values(), key=lambda row: row.signed_at)
         return {'id': existing.id, 'name': existing.signer_name, 'signed_at': existing.signed_at.isoformat() + 'Z'}

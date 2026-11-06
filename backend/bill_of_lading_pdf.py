@@ -169,7 +169,7 @@ def _front(canvas, company, values, signatures, logo):
         logo.drawOn(canvas, 306 - width / 2, TOP - 4 - height)
     order_top = TOP + 6
     for label, value in (('Order No.:', values.get('order_number')), ('Pick Up Date:', values.get('pickup_date')),
-                         ('1st date available for delivery:', values.get('first_available_delivery_date')), ('Vehicle ID:', '')):
+                         ('1st date available for delivery:', ''), ('Vehicle ID:', '')):
         form.box(426, order_top, RIGHT - 426, 22)
         form.text(428, order_top - 7, label, 6)
         form.text(430, order_top - 18, value, 8)
