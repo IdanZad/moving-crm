@@ -30,8 +30,8 @@ DISCLOSURES = ('<b>C. DISCLOSURES:</b> Packing materials/labor are not included 
     'materials list. The space reservation option, if selected by shipper, will be used to determine line haul charges. Bill of Lading is '
     'the controlling shipping contract. All charges including additional services will be charged based on the full tariff rates. See '
     'reverse side for important information including arbitration information. Tariff is available for inspection upon reasonable request '
-    'by calling carrier.<br/><b>Agreed pickup/delivery periods:</b> Guaranteed pickup and delivery dates are an optional service available '
-    'for purchase. Pickup and delivery dates are not guaranteed unless the optional Premium Guaranteed Service (P.G.S) is purchased. In '
+    'by calling carrier.<br/><b>Agreed pickup/deliery periods:</b> Guaranteed pickup and delivery dates are an optional service available '
+    'for purhcase. Pickup and delivery dates are not guaranteed unless the optional Premium Guaranteed Service (P.G.S) is purchased. In '
     'Compliance with 49 CFR Section &sect;375.505(b)(6) the non-guaranteed <b>Standard Service (S.S.) delivery &ldquo;period in time&rdquo; '
     'is up to thirty (30) business weekdays, not including storage time, beginning on the first date indicated as available for delivery '
     '(not the date of pickup).</b> The date above indicated as &ldquo;1st available for delivery&rdquo; is first date of the delivery period '
@@ -39,14 +39,14 @@ DISCLOSURES = ('<b>C. DISCLOSURES:</b> Packing materials/labor are not included 
     'include holidays or weekends. Unless P.G.S. is purchased, estimated delivery period is up to thirty business days from date indicated '
     'as first available for delivery.<br/><b>Filing of claims:</b> {company} shall not be liable for the loss or damage of the goods unless '
     'claim is made in writing supported by proof of ownership, value, and weight. All outstanding money due to {company} must be paid in '
-    'full before any claim can be submitted. Claims must be filed withing 9 months of delivery or demand thereof is refused and must be '
+    'full before any claim can be made. Claims must be filed withing 9 months of delivery or demand thereof is refused ad must be '
     'limited to the destination descriptions of damages for each item on the inventory logs. All damages and missing items must be noted on '
     'the inventory logs. Damage indications must specify each item damaged at the time of delivery. Shipper or agent has full authority to '
-    'order services and enter into agreement.<br/><b>Special Services:</b> Shipper will be notified by {company} of final charges prior to '
+    'order services and enter into agreement.<br/><b>Special Services:</b> Shipper will be notified by {company} of fnial charges prior to '
     'delivery and while in transit. On interstate moves and 18 wheelr may be used to deliver the property. If destination address does not '
     'have access for an 18 wheeler the shipper will be required to pay for shuttle service. Full re-handling/delivery fees are applied when '
     '{company} must take a second attempt to deliver the property if for any reason the shipper did not accept delivery on the first '
-    'attempt. For all estimates there may be additional charges for flights of stairs, elevators, extra drop-offs or pick-ups, re-delivery, '
+    'attampt. For all estimates there may be additional charges for flights of stairs, elevators, extra drop-offs or pick-ups, re-delivery, '
     'long carries, and shuttles for residences in restrictive areas.')
 ACKNOWLEDGE = ('<b>I acknowledge, have read, and agree to all the terms and conditions on both sides of this bill of lading contract and '
     'order for service. I have received the arbitration information and the booklet: Your Rights and Responsibilities When you Move and '
@@ -58,14 +58,14 @@ MAXIMUM_DUE = ('<b>Notice of Maximum amount due upon delivery:</b> Final charges
     'after 30 days of delivery. <b>Payment in full of all charges is due before unloading.</b> Fees for post contract services must be paid '
     'in advance of delivery and prior to unloading. There may be a fuel surcharge on all orders. <b>Conversion formula:</b> Conversion from '
     'weight to cubic feet, or vice versa, is a multiple of 7 to perform the calcualtions for the total charges.')
-DELIVERY = ('The shipper hereby acknowledges that the shipment was received in apparently good conditiond except as noted on the inventory '
+DELIVERY = ('The shipper hereby acknowledges that the shipment was received in apparently good conditiond except as noted on the invntory '
     'list/s. Furthermore, the shipper acknowledges that all the services that were ordered have been performed, have been fully satisfied, '
     'and the truck was inspected and nothing has been left behind. Shipper and/or agent has full authority to accept the shipment and enter '
     'into this agreement.')
 # Optional accessorial services, as on the form; each is circled when a charge on the estimate names it.
 SERVICES = [[('STORAGE', r'storage'), ('SHUTTLE', r'shuttle'), ('STAIRS', r'stairs'), ('MOTORCYCLE', r'motorcycle')],
             [('LONG CARRY', r'long carry'), ('PIANO', r'piano'), ('FULL VALUATION', r'full valuation'), ('EXTRA INSURANCE', r'insurance')],
-            [('BULKY', r'bulky|crating'), ('OTHER:', None), ('P.G.S. pickup/delivery', r'p\.g\.s|guaranteed'), ('', None)]]
+            [('BULKY', r'bulky|crating'), ('OTHER:__________', None), ('P.G.S. pickup/delivery', r'p\.g\.s|guaranteed'), ('', None)]]
 
 
 def _split_address(address):
@@ -134,12 +134,12 @@ SIGN_HERE = 'sign-here'
 SIGN_SPOTS = 2
 
 
-def _signature_row(form, top, label, signatures, height=24, spot=None):
+def _signature_row(form, top, label, signatures, height=24, spot=None, date_label='Date:'):
     """A signature line and its date, as the form's yellow spots; spot: the customer's spot number, signed from signatures."""
     form.box(LEFT, top, 190, height)
     form.box(LEFT + 190, top, MIDDLE - LEFT - 190, height)
     form.text(LEFT + 2, top - height + 3, label, 6, bold=True)
-    form.text(LEFT + 192, top - 8, 'Date:', 6, bold=True)
+    form.text(LEFT + 192, top - 8, date_label, 6, bold=True)
     if spot is None:
         return top - height
     signature = signatures.get(spot)
@@ -190,7 +190,7 @@ def _front(canvas, company, values, signatures, logo):
     # Left column: payment, estimated charges, services, disclosures and the shipper's acknowledgment.
     width = MIDDLE - LEFT
     left = form.paragraph(LEFT + 2, column, width - 4, FORM_OF_PAYMENT, 6.1) - 4
-    left = _signature_row(form, left, "Customer's Signature", signatures, spot=0) - 3
+    left = _signature_row(form, left, "Customer's Signatrue", signatures, spot=0, date_label='Date') - 3
     left = form.paragraph(LEFT + 2, left, width - 4, ESTIMATED_CHARGES, 5.9) - 4
     for label, value, note in (('TOTAL ESTIMATED CHARGES:', values.get('total_estimate'), 'Estimates are not guaranteed per 49 CFR §375.403(6)'),
                                ('MINIMUM Cu.Ft. / lbs.:', values.get('minimum_cuft'), ''),
@@ -236,15 +236,19 @@ def _front(canvas, company, values, signatures, logo):
             form.text(x + 2, right - height + 3.2, line, 6)
             form.text(x + width - 38, right - height + 3.2, amount, 6 if amount == '$' else 4.4, bold=amount != '$')
             right -= height
-    rows('WEIGHT CHARGES:', ['Base: __________ lbs. @ $ __________ per lbs.', 'Additional: ______ lbs. @ $ __________ per lbs.',
-                             'Additional: ______ lbs. @ $ __________ per lbs.'])
-    rows('CUBIC FEET CHARGES:', ['Base: __________ cu.ft. @ $ ________ per cu.ft.', 'Additional: ______ cu.ft. @ $ ________ per cu.ft.',
-                                 'Additional: ______ cu.ft. @ $ ________ per cu.ft.'])
-    rows('HOURLY CHARGES:', ['Part One: ______ Start Time ______ End Time ______ Hours', 'Part Two: ______ Start Time ______ End Time ______ Hours',
-                             '______ hrs. ______ men ______ Trucks @ $ ______ /hr', '______ hrs. ______ men ______ Trucks @ $ ______ /hr'])
+    rows('WEIGHT CHARGES:', ['Base: _______________ lbs. @ $ _______________ per lbs.',
+                             'Additional: _______________ lbs. @ $ _______________ per lbs.',
+                             'Additional: _______________ lbs. @ $ _______________ per lbs.'])
+    rows('CUBIC FEET CHARGES', ['Base: ______________ cu.ft. @ $______________ per cu.ft.',
+                                'Additional: ______________ cu.ft. @ $______________ per cu.ft.',
+                                'Additional: ______________ cu.ft. @ $______________ per cu.ft.'])
+    rows('HOURLY CHARGES:', [('Part One: ___________ Start Time ___________ End Time ___________ Hours', ''),
+                             ('Part Two: ___________ Start Time ___________ End Time ___________ Hours', ''),
+                             '___________ hrs. ___________ men ___________ Trucks @ $ ___________ /hr',
+                             '___________ hrs. ___________ men ___________ Trucks @ $ ___________ /hr'])
     rows('PACKING MAERIALS AND LABOR:', ['Total Material and Packing (See attached materials price list):', 'Full Packing Service:', 'Other:'])
-    rows('OTHER SERVICES', ['Fuel surcharge:', 'Stairs: $ ______ origin $ ______ destination', 'Long Carry: $ ______ origin $ ______ destination',
-                            'Shuttle: $ ______ origin $ ______ destination', 'Misc. Bulky Item:', 'Split pickup/delivery or extra stop-off',
+    rows('OTHER SERVICES', ['Fuel surcharge:', 'Stairs: $ _________ origin $ _________ destination',
+                            'Long Carry: $ _________ origin $ _________ destination', 'Shuttle: $ _________ origin $ _________ destination', 'Misc. Bulky Item:', 'Split pickup/delivery or extra stop-off',
                             'P.G.S. pickup/delivery service:', ('Valuation at $0.60 per pound per item:', 'INCLUDED FREE'), 'Other:'])
     rows('STORAGE CHARGES', ['______ Days @ cu.ft. ______ @ $ ______ per cu.ft. per month', 'Other:'])
     right = form.paragraph(x + 2, right - 3, width - 4, MAXIMUM_DUE, 5.5) - 3

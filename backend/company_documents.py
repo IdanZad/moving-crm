@@ -156,10 +156,27 @@ def seed_documents(connection):
         CompanyDocument.body_html == legacy).values(body_html=body,
         revision=CompanyDocument.revision + 1, updated_at=datetime.utcnow()))
     bill_of_lading = bill_of_lading_body()
-    # Bill of Lading documents never edited (still at their first revision) take the current wording: the form now
-    # prints the front itself, so the document holds the back's terms only.
-    connection.execute(update(CompanyDocument).where(CompanyDocument.key == BILL_OF_LADING_KEY, CompanyDocument.revision == 1,
-        CompanyDocument.body_html != bill_of_lading).values(body_html=bill_of_lading, updated_at=datetime.utcnow()))
+    # The form prints the front itself, so a Bill of Lading document holds the back's terms only: anything saved before
+    # SECTION 1 (the first version's front) is dropped. A copy of the earlier seed's terms, which differed from the printed
+    # ones in a few marks, takes the printed terms; edited terms are kept as saved.
+    start = '<p><strong>SECTION 1:'
+    first_seed = (Path(__file__).parent / 'data' / 'bill_of_lading_document.html').read_text(encoding='utf-8')
+    for printed, seeded in (("inventory list.(b)", "inventory list. (b)"),
+                            ("excess of the carrier's liability", "excess of the carrier&rsquo;s liability"),
+                            ("solely the shipper's responsibility with respect", "solely the shipper&rsquo;s responsibility with respect"),
+                            ("subject to the arbitrator's discretion. ", "subject to the arbitrator&rsquo;s discretion. "),
+                            ("that the Arbitrator's decision", "that the Arbitrator&rsquo;s decision"),
+                            ("as it doesn't exceed", "as it doesn&rsquo;t exceed")):
+        first_seed = first_seed.replace(printed, seeded)
+    first_seed = clean_html(first_seed)
+    for company_id, saved in connection.execute(select(CompanyDocument.company_id, CompanyDocument.body_html).where(
+            CompanyDocument.key == BILL_OF_LADING_KEY, CompanyDocument.body_html.contains(start))).all():
+        terms = saved[saved.index(start):]
+        terms = bill_of_lading if terms == first_seed else terms
+        if terms != saved:
+            connection.execute(update(CompanyDocument).where(CompanyDocument.company_id == company_id,
+                CompanyDocument.key == BILL_OF_LADING_KEY).values(body_html=terms, revision=CompanyDocument.revision + 1,
+                updated_at=datetime.utcnow()))
     for company_id in connection.execute(select(Company.id)).scalars():
         connection.execute(insert(CompanyDocument).values(company_id=company_id, key=DEFAULT_KEY,
             title=DEFAULT_TITLE, body_html=body, move_type='Long Distance', enabled=True,
