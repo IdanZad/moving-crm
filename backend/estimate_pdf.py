@@ -353,9 +353,11 @@ def _summary(data, styles, p, table, link=True, title='MOVING ESTIMATE', signatu
     return story
 
 
-def _signature_line(signature):
-    """The line to sign on: empty, or the drawn signature."""
+def _signature_block(data, p):
+    """The client's signature under the price breakdown and note, on page one: an empty line to sign
+    on, or the signature once signed."""
     from reportlab.graphics.shapes import Drawing, PolyLine
+    signature = data.get('signature')
     width, height = 260, 64
     if signature:
         drawing = Drawing(width, height)
@@ -363,51 +365,14 @@ def _signature_line(signature):
             drawing.add(PolyLine([coordinate for x, y in stroke for coordinate in (x * width, (1 - y) * height)],
                                  strokeColor=NAVY, strokeWidth=1.5))
         line = Table([[drawing]], colWidths=[width], rowHeights=[height], hAlign='LEFT')
-    else:
-        line = Table([['']], colWidths=[width], rowHeights=[height], hAlign='LEFT')
-    line.setStyle(TableStyle([('LINEBELOW', (0, 0), (-1, -1), .8, MUTED), ('LEFTPADDING', (0, 0), (-1, -1), 0)]))
-    return line
-
-
-def _signature_block(data, p):
-    """The client's signature under the price breakdown and note, on page one: an empty line to sign
-    on, or the signature once signed."""
-    signature = data.get('signature')
-    if signature:
         details = [p(signature['name']), p('Signed: ' + signature['signed_at'], 'NoteEstimate'),
                    p('Estimate version: ' + signature['estimate_id'], 'NoteEstimate')]
     else:
+        line = Table([['']], colWidths=[width], rowHeights=[height], hAlign='LEFT')
         details = [p('Name and date are added when you sign.', 'NoteEstimate')]
+    line.setStyle(TableStyle([('LINEBELOW', (0, 0), (-1, -1), .8, MUTED), ('LEFTPADDING', (0, 0), (-1, -1), 0)]))
     return KeepTogether([p('Client signature', 'SectionEstimate'),
-                         p('I have reviewed this estimate and agree to sign it electronically.'), _signature_line(signature), *details])
-
-
-def build_bill_of_lading_pdf(company, documents, signature=None):
-    """The Bill of Lading: its documents from settings, filled with the move, each starting a page. Each
-    {{customer_signature}} paragraph is the customer's signature: an empty line, or the drawn one with name and date."""
-    from company_documents import pdf_document_flowables
-    styles, p, table = _kit(FONT_SIZES[0])
-    def signature_spot():
-        details = ([p(signature['name']), p('Signed: ' + signature['signed_at'], 'NoteEstimate')] if signature
-                   else [p('Name and date are added when you sign.', 'NoteEstimate')])
-        return [KeepTogether([_signature_line(signature), *details]), Spacer(1, 6)]
-    story = []
-    for index, document in enumerate(documents):
-        if index:
-            story.append(PageBreak())
-        story.extend(pdf_document_flowables(document, styles, signature=signature_spot))
-    def footer(canvas, doc):
-        canvas.saveState()
-        canvas.setStrokeColor(colors.HexColor('#dce4e8'))
-        canvas.line(45, 39, 567, 39)
-        canvas.setFont('Helvetica', 8)
-        canvas.setFillColor(MUTED)
-        canvas.drawString(45, 26, 'Bill of Lading | ' + str(company.get('name') or ''))
-        canvas.drawRightString(567, 26, f'Page {doc.page}')
-        canvas.restoreState()
-    output = BytesIO()
-    _template(output, company).build(story, onFirstPage=footer, onLaterPages=footer)
-    return output.getvalue()
+                         p('I have reviewed this estimate and agree to sign it electronically.'), line, *details])
 
 
 def _summary_pages(data, size):
@@ -543,7 +508,7 @@ def build_estimate_pdf(data, rows, work_order=None):
     from company_documents import pdf_document_flowables
     for document in work_order.get('documents', []) if work_order else data.get('documents', []):
         story.append(PageBreak())
-        story.extend(pdf_document_flowables(document, styles))
+        story.extend(pdf_document_flowables(document, styles['BodyEstimate'], styles['SectionEstimate']))
     def footer(canvas, doc):
         canvas.saveState()
         canvas.setStrokeColor(colors.HexColor('#dce4e8'))

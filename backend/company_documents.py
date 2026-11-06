@@ -11,22 +11,19 @@ DEFAULT_TITLE = 'LD Binding Estimate for Moving Services'
 BILL_OF_LADING_KEY = 'bill-of-lading'
 BILL_OF_LADING_TITLE = 'Interstate Bill of Lading Contract'
 
-# Details of the move a document can show, filled from the signed estimate. {{customer_signature}} marks where
-# the customer signs: an empty line until signed, then the drawn signature with name and date.
+# Details of the move a document can show, filled from the signed estimate.
 MOVE_FIELDS = {
     'customer_name': 'Customer name', 'customer_phone': 'Customer phone', 'customer_email': 'Customer email',
     'pickup_address': 'Pickup address', 'delivery_address': 'Delivery address', 'stops': 'Additional stops',
     'pickup_date': 'Pickup date', 'first_available_delivery_date': 'First available delivery date',
     'order_number': 'Order number', 'total_estimate': 'Total estimated charges', 'minimum_cuft': 'Minimum cu ft',
     'minimum_charge': 'Total minimum charge', 'services_ordered': 'Services ordered',
-    'customer_signature': 'Customer signature',
 }
 MOVE_PARAMETER = re.compile(r'\{\{\s*([a-z_]+)\s*\}\}')
-SIGNATURE_MARK = '{{customer_signature}}'
 
 FIELD_LABELS = {
     'name': 'Company name', 'phone': 'Phone number', 'sender_email': 'Email address',
-    'office_address': 'Office address', 'dot_number': 'USDOT number', 'id': 'Company ID',
+    'office_address': 'Office address', 'dot_number': 'USDOT number', 'mc_number': 'MC number', 'id': 'Company ID',
     'samrtmoving_branch_id': 'SmartMoving branch ID', 'is_default_company': 'Default company',
     'created_at': 'Company created date', 'logo': 'Logo data', 'color': 'Brand color',
 }
@@ -159,6 +156,10 @@ def seed_documents(connection):
         CompanyDocument.body_html == legacy).values(body_html=body,
         revision=CompanyDocument.revision + 1, updated_at=datetime.utcnow()))
     bill_of_lading = bill_of_lading_body()
+    # Bill of Lading documents never edited (still at their first revision) take the current wording: the form now
+    # prints the front itself, so the document holds the back's terms only.
+    connection.execute(update(CompanyDocument).where(CompanyDocument.key == BILL_OF_LADING_KEY, CompanyDocument.revision == 1,
+        CompanyDocument.body_html != bill_of_lading).values(body_html=bill_of_lading, updated_at=datetime.utcnow()))
     for company_id in connection.execute(select(Company.id)).scalars():
         connection.execute(insert(CompanyDocument).values(company_id=company_id, key=DEFAULT_KEY,
             title=DEFAULT_TITLE, body_html=body, move_type='Long Distance', enabled=True,
@@ -189,16 +190,16 @@ def move_fields():
 
 
 def fill_move_fields(html, values):
-    """Each move detail in the document's text, escaped as text; the signature mark stays for the PDF to place."""
+    """Each move detail in the document's text, escaped as text."""
     def replace(match):
         key = match.group(1)
-        if key not in MOVE_FIELDS or key == 'customer_signature':
+        if key not in MOVE_FIELDS:
             return match.group(0)
         return escape(str(values.get(key) or ''), quote=True)
     return MOVE_PARAMETER.sub(replace, html)
 
 
-def estimate_documents(lead, job, db, used_in='estimate'):
+def documents_for(lead, job, db, used_in='estimate'):
     from sqlalchemy import case
     from models import Company, CompanyDocument
     from move_types import normalize_move_type
@@ -221,12 +222,11 @@ def estimate_documents(lead, job, db, used_in='estimate'):
     return result
 
 
-def pdf_document_flowables(document, styles, signature=None):
-    """The document's title and text; with signature (a function making the signature's flowables), each paragraph
-    holding only {{customer_signature}} becomes the signature."""
+def pdf_document_flowables(document, body, heading):
+    """The document's title and text, in the given body and heading styles."""
     from reportlab.platypus import Paragraph, Spacer
     from reportlab.lib.styles import ParagraphStyle
-    normal = ParagraphStyle('CompanyDocumentBody', parent=styles['BodyEstimate'], spaceAfter=7)
+    normal = ParagraphStyle('CompanyDocumentBody', parent=body, spaceAfter=7)
     bullet = ParagraphStyle('CompanyDocumentList', parent=normal, leftIndent=14, firstLineIndent=0)
     blocks = {'p', 'h2', 'h3', 'ul', 'ol', 'li'}
 
@@ -245,10 +245,7 @@ def pdf_document_flowables(document, styles, signature=None):
     def walk(nodes, style=normal, marker=None):
         output, pending = [], []
         def flush():
-            text = ''.join(pending).strip()
-            if signature and text == SIGNATURE_MARK:
-                output.extend(signature())
-            elif text:
+            if ''.join(pending).strip():
                 output.append(Paragraph(''.join(pending), style, bulletText=marker))
             pending.clear()
         for node in nodes:
@@ -262,7 +259,7 @@ def pdf_document_flowables(document, styles, signature=None):
                     if isinstance(child, dict) and child['tag'] == 'li':
                         output.extend(walk(child['children'], bullet, f'{index + 1}.' if tag == 'ol' else '-'))
             else:
-                output.extend(walk(node['children'], styles['SectionEstimate'] if tag in {'h2', 'h3'} else style, marker))
+                output.extend(walk(node['children'], heading if tag in {'h2', 'h3'} else style, marker))
         flush()
         return output
-    return [Paragraph(escape(document['title']), styles['SectionEstimate']), Spacer(1, 6), *walk(parse_document(document['body_html']))]
+    return [Paragraph(escape(document['title']), heading), Spacer(1, 6), *walk(parse_document(document['body_html']))]

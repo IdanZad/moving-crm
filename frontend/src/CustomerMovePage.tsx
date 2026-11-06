@@ -13,7 +13,7 @@ import { groupTerms, needsTermAnswer, requiredQuestionTarget } from './customerQ
 import QuestionReferenceImages from "./QuestionReferenceImages";
 import { savedPhotos, storePhoto, removePhoto } from './photoDrafts';
 import ManualInventoryModal from "./ManualInventoryModal";
-import EstimateSigning, { type SignResult } from './EstimateSigning';
+import Signing, { type SignResult } from './Signing';
 import EstimateViewer, { type SignatureRemoved } from './EstimateViewer';
 import InventoryViewer from './InventoryViewer';
 import BillOfLadingViewer from './BillOfLadingViewer';
@@ -1442,7 +1442,7 @@ export default function CustomerMovePage() {
                 </div>
               )}
 
-              {!estimateViewerOpen && pageSections.every(section => sections[section].ready) && <EstimateSigning key={accessId} base={base} headers={headers} customerName={data.name || ''} version="" onClose={() => {}} reportIds={(data.report_history || []).map(report => report.id)}
+              {!estimateViewerOpen && pageSections.every(section => sections[section].ready) && <Signing key={accessId} base={base} headers={headers} customerName={data.name || ''} version="" onClose={() => {}} reportIds={(data.report_history || []).map(report => report.id)}
                 disabled={!data.estimate || data.spark?.status !== 'completed' || pdfBusy || answersSaving || calculatingPrice || busy || pricingLoading || !!pricingLoadError} />}
               {estimateViewerOpen && <EstimateViewer key={preparedEstimate} filename={pdfName('Estimate')} onSignatureRemoved={openCurrentEstimate} onSigned={showSignature} alreadySigned={preparedSigned} approved={preparedApproved} rep={repPage} onApproved={() => setPreparedApproved(true)} base={base} headers={headers} customerName={data.name || ''} version={preparedEstimate} url={estimatePdfUrl} error={pdfError} onClose={() => setEstimateViewerOpen(false)} />}
               {(data.estimate_needs_update || data.list_changed) && <p role="status">Your inventory has changed. The displayed price needs to be recalculated. Open the estimate to update it before signing.</p>}

@@ -172,6 +172,7 @@ def migrate() -> None:
                              ('estimated_hours', 'NUMERIC(5, 2)'), ('travel_hours', 'NUMERIC(5, 2)')):
             add_column(connection, 'lead_jobs', column, kind)
         add_column(connection, 'companies', 'valuation_per_lb', 'NUMERIC(6, 2)')
+        add_column(connection, 'companies', 'mc_number', "VARCHAR(30) NOT NULL DEFAULT ''")
         # Where payments were first made with a payout each, those payouts become the lead's one payout,
         # and the old columns stop being required; they are left in place until they are dropped.
         if connection.execute(text("""SELECT 1 FROM information_schema.columns
