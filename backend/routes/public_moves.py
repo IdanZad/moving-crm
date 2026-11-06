@@ -887,6 +887,7 @@ def _move_details(access, db, *, refresh_report=True, include_pricing=True, pric
     pricing_data['signature_requires_resign'] = pricing_data['signature_status'] == 'changed'
     # Rep pages show every price line (individual_charges), and only they get the work order, once the estimate is signed.
     pricing_data['work_order_available'] = bool(individual_charges and pricing_data['signature_status'] == 'signed')
+    pricing_data['bill_of_lading'] = _bill_of_lading_status(access, db, pricing_data['signature_status'] == 'signed')
     if pricing_only:
         return pricing_data
     return {'signature_status': pricing_data['signature_status'], 'work_order_available': pricing_data['work_order_available'], 'estimate_needs_update': pricing_data['estimate_needs_update'], 'signature_requires_resign': pricing_data['signature_requires_resign'], 'pricing_error': pricing_error, 'extra_stops': extra_stops, 'elevator': elevator, 'long_carry': long_carry, 'stairs': stairs, 'storage': storage, 'shuttle': shuttle, 'google_maps_browser_key': setting('GOOGLE_MAPS_BROWSER_KEY'), 'item_questions': item_questions, 'packing_package': packing_package, 'packing_items': packing_items, 'packing_saved': job.customer_packing is not None, 'name': lead.full_name, 'phone': lead.phone or '', 'email': lead.email or '', 'contacts': [row.to_dict() for row in lead.contacts], 'move_date': job.move_date or '',
@@ -1135,7 +1136,7 @@ def sign_estimate(signature_id: str, body: EstimateSigningInput, access: PublicM
     # The page shows the estimate signed from this answer, without loading its pricing again.
     work_order = is_rep_request(access, request)
     return {'id': record.id, 'name': name, 'signed_at': signed_at.isoformat() + 'Z', 'report_id': record.report_id,
-            'work_order_available': work_order}
+            'work_order_available': work_order, 'bill_of_lading': _bill_of_lading_status(access, db, True)}
 
 
 @router.get('/api/public-moves/{access_id}/work-order.pdf')
@@ -1163,6 +1164,102 @@ def work_order_pdf(access: PublicMoveAccess = Depends(verified), db: Session = D
         'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff'})
 
 
+def _bill_of_lading(access, db):
+    """The Bill of Lading for the move's signed estimate: (that signed copy, the filled documents, their fingerprint),
+    or None when the estimate is not signed or the company has no Bill of Lading document turned on."""
+    import hashlib
+    from company_documents import estimate_documents, fill_move_fields
+    from estimate_pdf import money, _is_service
+    signed = db.query(EstimateSignature).filter(
+        EstimateSignature.lead_id == access.lead_id, EstimateSignature.job_id == access.job_id,
+        EstimateSignature.signed_at.isnot(None)).order_by(EstimateSignature.signed_at.desc()).first()
+    if not signed:
+        return None
+    lead, job = db.get(Lead, access.lead_id), db.get(LeadJob, access.job_id)
+    documents = estimate_documents(lead, job, db, 'bill_of_lading')
+    if not documents:
+        return None
+    # The move's details as the customer signed them on the estimate.
+    data = json.loads(signed.snapshot)['data']
+    estimate = data.get('estimate') or {}
+    charges = estimate.get('charges') or []
+    transport = next((charge for charge in charges if charge.get('name') == 'Transportation charge'), {})
+    minimum_charge = re.search(r'minimum charge (\$[\d,]+\.\d{2})', transport.get('description') or '')
+    minimum_cuft = estimate.get('minimum_cuft') or (data.get('packing_package') or {}).get('minimum_cubic_feet')
+    values = {
+        'customer_name': data.get('name'), 'customer_phone': data.get('phone'), 'customer_email': data.get('email'),
+        'pickup_address': data.get('pickup'), 'delivery_address': data.get('delivery'),
+        'stops': '; '.join(stop.get('address', '') for stop in data.get('stops') or []),
+        'pickup_date': data.get('move_date'), 'first_available_delivery_date': (data.get('storage') or {}).get('available_date'),
+        'order_number': f"{lead.quote_number}-{job.job_order}" if lead.quote_number else str(job.job_order),
+        'total_estimate': money(estimate.get('price')), 'minimum_cuft': f"{float(minimum_cuft):g} cu ft" if minimum_cuft else '',
+        'minimum_charge': minimum_charge[1] if minimum_charge else '',
+        'services_ordered': ', '.join(charge['name'] for charge in charges if _is_service(charge) and charge.get('total')),
+    }
+    filled = [dict(document, body_html=fill_move_fields(document['body_html'], values)) for document in documents]
+    fingerprint = hashlib.sha256(json.dumps([[d['title'], d['body_html']] for d in filled]).encode()).hexdigest()
+    return signed, filled, fingerprint
+
+
+def _bill_of_lading_status(access, db, estimate_signed):
+    """None when the company has no Bill of Lading turned on for this move; otherwise whether it is signed for the
+    current signed estimate (never, while the estimate itself is not signed)."""
+    from company_documents import estimate_documents
+    if not estimate_documents(db.get(Lead, access.lead_id), db.get(LeadJob, access.job_id), db, 'bill_of_lading'):
+        return None
+    if not estimate_signed:
+        return {'signed': False}
+    found = _bill_of_lading(access, db)
+    return {'signed': bool(found) and _signed_bill_of_lading(found[0].id, db) is not None}
+
+
+def _signed_bill_of_lading(estimate_signature_id, db):
+    from models import BillOfLadingSignature
+    return db.query(BillOfLadingSignature).filter_by(estimate_signature_id=estimate_signature_id).order_by(
+        BillOfLadingSignature.signed_at.desc()).first()
+
+
+@router.get('/api/public-moves/{access_id}/bill-of-lading.pdf')
+def bill_of_lading_pdf(access: PublicMoveAccess = Depends(verified), db: Session = Depends(get_db)):
+    """The Bill of Lading as signed for the current signed estimate, or ready to sign (its fingerprint in X-Revision)."""
+    from estimate_pdf import build_bill_of_lading_pdf
+    found = _bill_of_lading(access, db)
+    if not found:
+        raise HTTPException(409, 'The Bill of Lading is ready once the estimate is signed.')
+    estimate, documents, fingerprint = found
+    signed = _signed_bill_of_lading(estimate.id, db)
+    headers = {'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff', 'X-Revision': fingerprint,
+               'Access-Control-Expose-Headers': 'X-Revision, X-Signed', 'X-Signed': '1' if signed else '0'}
+    pdf = signed.pdf if signed else build_bill_of_lading_pdf(json.loads(estimate.snapshot)['data'].get('company_details') or {}, documents)
+    return Response(pdf, media_type='application/pdf', headers={**headers, 'Content-Disposition': 'inline; filename="bill-of-lading.pdf"'})
+
+
+@router.post('/api/public-moves/{access_id}/bill-of-lading/{revision}/sign')
+def sign_bill_of_lading(revision: str, body: EstimateSigningInput, access: PublicMoveAccess = Depends(verified), db: Session = Depends(get_db)):
+    from estimate_pdf import build_bill_of_lading_pdf
+    from models import BillOfLadingSignature
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(422, 'Enter your full name')
+    found = _bill_of_lading(access, db)
+    if not found:
+        raise HTTPException(409, 'The Bill of Lading is ready once the estimate is signed.')
+    estimate, documents, fingerprint = found
+    if revision != fingerprint:
+        raise HTTPException(409, 'The Bill of Lading changed while you were reviewing it. Close it and open it again to sign.')
+    existing = _signed_bill_of_lading(estimate.id, db)
+    if existing:
+        return {'id': existing.id, 'name': existing.signer_name, 'signed_at': existing.signed_at.isoformat() + 'Z'}
+    signed_at = datetime.utcnow()
+    signature = {'name': name, 'signed_at': signed_at.isoformat() + 'Z', 'strokes': body.strokes}
+    record = BillOfLadingSignature(lead_id=access.lead_id, job_id=access.job_id, estimate_signature_id=estimate.id,
+        content_hash=fingerprint, signer_name=name, signature=json.dumps(signature), signed_at=signed_at,
+        pdf=build_bill_of_lading_pdf(json.loads(estimate.snapshot)['data'].get('company_details') or {}, documents, signature))
+    db.add(record)
+    db.commit()
+    return {'id': record.id, 'name': name, 'signed_at': signature['signed_at']}
+
+
 @router.post('/api/public-moves/{access_id}/estimate-signatures/{signature_id}/resign')
 def clear_estimate_signature(signature_id: str, access: PublicMoveAccess = Depends(verified), db: Session = Depends(get_db), request: Request = None):
     from estimate_pdf import build_estimate_pdf
@@ -1180,7 +1277,8 @@ def clear_estimate_signature(signature_id: str, access: PublicMoveAccess = Depen
     status = estimate_signature_status(db, access.lead_id, access.job_id,
                                        lambda: _move_details(access, db, pricing_only=True, estimate_only=True), None)
     work_order = status == 'signed' and is_rep_request(access, request)
-    return {'removed_id': record.id, 'signature_status': status, 'work_order_available': work_order}
+    return {'removed_id': record.id, 'signature_status': status, 'work_order_available': work_order,
+            'bill_of_lading': _bill_of_lading_status(access, db, status == 'signed')}
 
 
 @router.get('/api/public-moves/{access_id}/inventory-catalog')

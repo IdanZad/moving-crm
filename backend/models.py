@@ -26,6 +26,21 @@ class CompanyDocument(Base):
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
 
+class BillOfLadingSignature(Base):
+    """A signed Bill of Lading: the PDF as signed, for the signed estimate it was filled from."""
+    __tablename__ = 'bill_of_lading_signatures'
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    lead_id = Column(String(36), ForeignKey('leads.id'), nullable=False, index=True)
+    job_id = Column(String(36), ForeignKey('lead_jobs.id'), nullable=False, index=True)
+    estimate_signature_id = Column(String(36), ForeignKey('estimate_signatures.id'), nullable=False, index=True)
+    # A fingerprint of the filled text the customer saw, so a signature only goes on the version they read.
+    content_hash = Column(String(64), nullable=False)
+    pdf = Column(LargeBinary, nullable=False)
+    signer_name = Column(String(200), nullable=False)
+    signature = Column(Text, nullable=False)
+    signed_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
 class EstimateSignature(Base):
     __tablename__ = 'estimate_signatures'
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))

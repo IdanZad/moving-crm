@@ -8,6 +8,21 @@ import re
 
 DEFAULT_KEY = 'ld-binding-estimate'
 DEFAULT_TITLE = 'LD Binding Estimate for Moving Services'
+BILL_OF_LADING_KEY = 'bill-of-lading'
+BILL_OF_LADING_TITLE = 'Interstate Bill of Lading Contract'
+
+# Details of the move a document can show, filled from the signed estimate. {{customer_signature}} marks where
+# the customer signs: an empty line until signed, then the drawn signature with name and date.
+MOVE_FIELDS = {
+    'customer_name': 'Customer name', 'customer_phone': 'Customer phone', 'customer_email': 'Customer email',
+    'pickup_address': 'Pickup address', 'delivery_address': 'Delivery address', 'stops': 'Additional stops',
+    'pickup_date': 'Pickup date', 'first_available_delivery_date': 'First available delivery date',
+    'order_number': 'Order number', 'total_estimate': 'Total estimated charges', 'minimum_cuft': 'Minimum cu ft',
+    'minimum_charge': 'Total minimum charge', 'services_ordered': 'Services ordered',
+    'customer_signature': 'Customer signature',
+}
+MOVE_PARAMETER = re.compile(r'\{\{\s*([a-z_]+)\s*\}\}')
+SIGNATURE_MARK = '{{customer_signature}}'
 
 FIELD_LABELS = {
     'name': 'Company name', 'phone': 'Phone number', 'sender_email': 'Email address',
@@ -125,6 +140,10 @@ def default_body():
     return clean_html((Path(__file__).parent / 'data' / 'default_estimate_document.html').read_text(encoding='utf-8'))
 
 
+def bill_of_lading_body():
+    return clean_html((Path(__file__).parent / 'data' / 'bill_of_lading_document.html').read_text(encoding='utf-8'))
+
+
 def seed_documents(connection):
     """Insert defaults only; redeploying never overwrites company edits."""
     from sqlalchemy import select, update
@@ -139,10 +158,15 @@ def seed_documents(connection):
     connection.execute(update(CompanyDocument).where(CompanyDocument.key == DEFAULT_KEY,
         CompanyDocument.body_html == legacy).values(body_html=body,
         revision=CompanyDocument.revision + 1, updated_at=datetime.utcnow()))
+    bill_of_lading = bill_of_lading_body()
     for company_id in connection.execute(select(Company.id)).scalars():
         connection.execute(insert(CompanyDocument).values(company_id=company_id, key=DEFAULT_KEY,
             title=DEFAULT_TITLE, body_html=body, move_type='Long Distance', enabled=True,
             revision=1, updated_at=datetime.utcnow()).on_conflict_do_nothing())
+        # Off until a company turns it on: its terms (venue, MC number) are the company's to check first.
+        connection.execute(insert(CompanyDocument).values(company_id=company_id, key=BILL_OF_LADING_KEY,
+            title=BILL_OF_LADING_TITLE, body_html=bill_of_lading, move_type='Long Distance', used_in='bill_of_lading',
+            enabled=False, revision=1, updated_at=datetime.utcnow()).on_conflict_do_nothing())
 
 
 def new_company_document(company_id):
@@ -156,7 +180,22 @@ def document_payload(row):
 
 
 # The paperwork a document can go with; each has a part built from the move, followed by its documents.
-DOCUMENT_USES = ('estimate', 'work_order')
+DOCUMENT_USES = ('estimate', 'work_order', 'bill_of_lading')
+
+
+def move_fields():
+    """The move details as settings lists them next to the company details; their values come from each move."""
+    return [{'key': key, 'label': 'Move: ' + label, 'value': 'Filled from the move', 'missing': False} for key, label in MOVE_FIELDS.items()]
+
+
+def fill_move_fields(html, values):
+    """Each move detail in the document's text, escaped as text; the signature mark stays for the PDF to place."""
+    def replace(match):
+        key = match.group(1)
+        if key not in MOVE_FIELDS or key == 'customer_signature':
+            return match.group(0)
+        return escape(str(values.get(key) or ''), quote=True)
+    return MOVE_PARAMETER.sub(replace, html)
 
 
 def estimate_documents(lead, job, db, used_in='estimate'):
@@ -182,7 +221,9 @@ def estimate_documents(lead, job, db, used_in='estimate'):
     return result
 
 
-def pdf_document_flowables(document, styles):
+def pdf_document_flowables(document, styles, signature=None):
+    """The document's title and text; with signature (a function making the signature's flowables), each paragraph
+    holding only {{customer_signature}} becomes the signature."""
     from reportlab.platypus import Paragraph, Spacer
     from reportlab.lib.styles import ParagraphStyle
     normal = ParagraphStyle('CompanyDocumentBody', parent=styles['BodyEstimate'], spaceAfter=7)
@@ -204,7 +245,10 @@ def pdf_document_flowables(document, styles):
     def walk(nodes, style=normal, marker=None):
         output, pending = [], []
         def flush():
-            if ''.join(pending).strip():
+            text = ''.join(pending).strip()
+            if signature and text == SIGNATURE_MARK:
+                output.extend(signature())
+            elif text:
                 output.append(Paragraph(''.join(pending), style, bulletText=marker))
             pending.clear()
         for node in nodes:

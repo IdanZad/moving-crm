@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import EstimateSigning, { type SignResult } from './EstimateSigning';
 
 // The Re-sign answer: the signature removed, and the estimate's status without it.
-export type SignatureRemoved = { removed_id: string; signature_status: 'unsigned' | 'signed' | 'changed'; work_order_available: boolean };
+export type SignatureRemoved = { removed_id: string; signature_status: 'unsigned' | 'signed' | 'changed'; work_order_available: boolean;
+  bill_of_lading: { signed: boolean } | null };
 import './EstimateViewer.css';
 
 export default function EstimateViewer({ base, headers, customerName, version, url, error, onClose, alreadySigned = false, approved = true, rep = false, onApproved, filename, onSignatureRemoved, onSigned }: {

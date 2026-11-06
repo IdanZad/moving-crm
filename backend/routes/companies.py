@@ -85,7 +85,7 @@ class CompanyDocumentInput(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     body_html: str = Field(max_length=100000)
     move_type: str = Field(pattern=r'^(Long Distance|Local|All)$')
-    used_in: str = Field(default='estimate', pattern=r'^(estimate|work_order)$')
+    used_in: str = Field(default='estimate', pattern=r'^(estimate|work_order|bill_of_lading)$')
     enabled: bool = True
     revision: int = Field(default=0, ge=0)
 
@@ -94,13 +94,13 @@ class CompanyDocumentInput(BaseModel):
 def company_documents(company_id: str, _: User = Depends(require_admin), db: Session = Depends(get_db)):
     from sqlalchemy import case
     from models import CompanyDocument
-    from company_documents import document_payload, DEFAULT_KEY, company_fields
+    from company_documents import document_payload, DEFAULT_KEY, company_fields, move_fields
     company = db.get(Company, company_id)
     if company is None:
         raise HTTPException(404, 'Company not found')
     rows = db.query(CompanyDocument).filter_by(company_id=company_id).order_by(
         case((CompanyDocument.key == DEFAULT_KEY, 0), else_=1), CompanyDocument.title).all()
-    return {'items': [document_payload(row) for row in rows], 'fields': company_fields(company)}
+    return {'items': [document_payload(row) for row in rows], 'fields': company_fields(company) + move_fields()}
 
 
 @router.put('/{company_id}/documents/{document_key}')

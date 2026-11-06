@@ -9,7 +9,7 @@ type CompanyField = { key: string; label: string; value: string; missing: boolea
 type CompanyDocument = { key: string; title: string; body_html: string; move_type: string; used_in: string; enabled: boolean; revision: number };
 
 // The paperwork a document goes with, after the part filled from the move.
-const DOCUMENT_USES: Record<string, string> = { estimate: 'Estimate', work_order: 'Work order' };
+const DOCUMENT_USES: Record<string, string> = { estimate: 'Estimate', work_order: 'Work order', bill_of_lading: 'Bill of Lading' };
 
 export default function CompanyDocumentsPage() {
   const { token } = useAuth();
