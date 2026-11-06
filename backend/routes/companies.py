@@ -85,6 +85,7 @@ class CompanyDocumentInput(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     body_html: str = Field(max_length=100000)
     move_type: str = Field(pattern=r'^(Long Distance|Local|All)$')
+    used_in: str = Field(default='estimate', pattern=r'^(estimate|work_order)$')
     enabled: bool = True
     revision: int = Field(default=0, ge=0)
 
@@ -126,7 +127,7 @@ def save_company_document(company_id: str, document_key: str, body: CompanyDocum
         row = CompanyDocument(company_id=company_id, key=document_key)
         db.add(row)
     row.title, row.body_html = body.title.strip(), html
-    row.move_type, row.enabled = body.move_type, body.enabled
+    row.move_type, row.used_in, row.enabled = body.move_type, body.used_in, body.enabled
     row.revision, row.updated_at = body.revision + 1, datetime.utcnow()
     db.commit()
     return document_payload(row)

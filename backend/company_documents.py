@@ -152,10 +152,14 @@ def new_company_document(company_id):
 
 
 def document_payload(row):
-    return {key: getattr(row, key) for key in ('key', 'title', 'body_html', 'move_type', 'enabled', 'revision')}
+    return {key: getattr(row, key) for key in ('key', 'title', 'body_html', 'move_type', 'used_in', 'enabled', 'revision')}
 
 
-def estimate_documents(lead, job, db):
+# The paperwork a document can go with; each has a part built from the move, followed by its documents.
+DOCUMENT_USES = ('estimate', 'work_order')
+
+
+def estimate_documents(lead, job, db, used_in='estimate'):
     from sqlalchemy import case
     from models import Company, CompanyDocument
     from move_types import normalize_move_type
@@ -164,7 +168,8 @@ def estimate_documents(lead, job, db):
         return []
     move_type = normalize_move_type(lead.move_type)
     rows = db.query(CompanyDocument).filter(CompanyDocument.company_id == company.id,
-        CompanyDocument.enabled.is_(True), CompanyDocument.move_type.in_([move_type, 'All'])).order_by(
+        CompanyDocument.enabled.is_(True), CompanyDocument.used_in == used_in,
+        CompanyDocument.move_type.in_([move_type, 'All'])).order_by(
             case((CompanyDocument.key == DEFAULT_KEY, 0), else_=1), CompanyDocument.title).all()
     result = []
     for row in rows:

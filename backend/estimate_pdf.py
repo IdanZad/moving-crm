@@ -506,7 +506,7 @@ def build_estimate_pdf(data, rows, work_order=None):
                          p(money(material.get('packing_price')), 'RightEstimate')])
         story.append(table(body, [228, 104, 95, 95], header=True))
     from company_documents import pdf_document_flowables
-    for document in [] if work_order else data.get('documents', []):
+    for document in work_order.get('documents', []) if work_order else data.get('documents', []):
         story.append(PageBreak())
         story.extend(pdf_document_flowables(document, styles))
     def footer(canvas, doc):

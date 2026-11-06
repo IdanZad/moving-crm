@@ -19,6 +19,8 @@ class CompanyDocument(Base):
     title = Column(String(200), nullable=False)
     body_html = Column(Text, nullable=False)
     move_type = Column(String(30), nullable=False, default='Long Distance')
+    # Which paperwork the text goes with: its built part (filled from the move) followed by this text.
+    used_in = Column(String(30), nullable=False, default='estimate', server_default='estimate')
     enabled = Column(Boolean, nullable=False, default=True)
     revision = Column(Integer, nullable=False, default=1)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)

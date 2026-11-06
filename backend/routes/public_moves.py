@@ -1153,9 +1153,11 @@ def work_order_pdf(access: PublicMoveAccess = Depends(verified), db: Session = D
     job = db.get(LeadJob, access.job_id)
     snapshot = json.loads(record.snapshot)
     data = dict(snapshot['data'], signature=json.loads(record.signature))
+    from company_documents import estimate_documents
     pdf = build_estimate_pdf(data, snapshot['rows'], work_order={
         'payments': [payment.to_dict() for payment in payments],
-        'internal_notes': job.notes, 'foreman_notes': job.foreman_notes})
+        'internal_notes': job.notes, 'foreman_notes': job.foreman_notes,
+        'documents': estimate_documents(db.get(Lead, access.lead_id), job, db, 'work_order')})
     return Response(pdf, media_type='application/pdf', headers={
         'Content-Disposition': 'inline; filename="work-order-' + record.id + '.pdf"',
         'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff'})

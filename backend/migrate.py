@@ -23,6 +23,8 @@ def migrate() -> None:
     with engine.begin() as connection:
         from models import InventoryCatalogSet, EstimateSignature, CompanyDocument
         CompanyDocument.__table__.create(connection, checkfirst=True)
+        # Every document so far went with the estimate. Added before seeding, which writes documents.
+        add_column(connection, 'company_documents', 'used_in', "VARCHAR(30) NOT NULL DEFAULT 'estimate'")
         from company_documents import seed_documents
         seed_documents(connection)
         EstimateSignature.__table__.create(connection, checkfirst=True)
