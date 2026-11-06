@@ -62,16 +62,19 @@ DELIVERY = ('The shipper hereby acknowledges that the shipment was received in a
     'list/s. Furthermore, the shipper acknowledges that all the services that were ordered have been performed, have been fully satisfied, '
     'and the truck was inspected and nothing has been left behind. Shipper and/or agent has full authority to accept the shipment and enter '
     'into this agreement.')
-# Optional accessorial services, as on the form; each is circled when a charge on the estimate names it.
-SERVICES = [[('STORAGE', r'storage'), ('SHUTTLE', r'shuttle'), ('STAIRS', r'stairs'), ('MOTORCYCLE', r'motorcycle')],
-            [('LONG CARRY', r'long carry'), ('PIANO', r'piano'), ('FULL VALUATION', r'full valuation'), ('EXTRA INSURANCE', r'insurance')],
-            [('BULKY', r'bulky|crating'), ('OTHER:__________', None), ('P.G.S. pickup/delivery', r'p\.g\.s|guaranteed'), ('', None)]]
+# Optional accessorial services, as on the form; left for circling by hand.
+SERVICES = [['STORAGE', 'SHUTTLE', 'STAIRS', 'MOTORCYCLE'], ['LONG CARRY', 'PIANO', 'FULL VALUATION', 'EXTRA INSURANCE'],
+            ['BULKY', 'OTHER:__________', 'P.G.S. pickup/delivery', '']]
 
 
 def _split_address(address):
-    """The street on one line, and the city, state and ZIP on the next, as the form asks."""
-    street, _, rest = (address or '').partition(',')
-    return (street.strip(), rest.strip()) if rest else (address or '', '')
+    """The street on one line, and the city, state and ZIP on the next, as the form asks. Without a street (a house
+    number and name, such as only a ZIP code or a city), it all goes on the city, state and ZIP line."""
+    address = re.sub(r',?\s*(USA|United States)\s*$', '', (address or '').strip(), flags=re.I)
+    street, _, rest = address.partition(',')
+    if not re.match(r'\d[\w-]*\s+\D', street.strip()):
+        return '', address
+    return street.strip(), rest.strip()
 
 
 class _Form:
@@ -173,18 +176,19 @@ def _front(canvas, company, values, signatures, logo):
         order_top -= 22
     canvas.setFont('Helvetica-Bold', 14)
     canvas.drawCentredString(306, 680, 'INTERSTATE BILL OF LADING CONTRACT')
-    # Origin and destination.
+    # Origin, filled from the move; the destination is left empty.
     top = 674
-    for x, title, address in ((LEFT, 'ORIGIN', values.get('pickup_address')), (MIDDLE + 6, 'DESTINATION', values.get('delivery_address'))):
+    for x, title, filled in ((LEFT, 'ORIGIN', True), (MIDDLE + 6, 'DESTINATION', False)):
         width = MIDDLE - LEFT if x == LEFT else RIGHT - x
         row = form.bar(x, top, width, 14, title, 9)
-        street, city = _split_address(address)
-        for label, value in (('NAME:', values.get('customer_name')), ('ADDRESS:', street), ('CITY/STATE/ZIP:', city),
-                             ('PHONE:', values.get('customer_phone'))):
+        street, city = _split_address(values.get('pickup_address')) if filled else ('', '')
+        for label, value in (('NAME:', values.get('customer_name') if filled else ''), ('ADDRESS:', street), ('CITY/STATE/ZIP:', city),
+                             ('PHONE:', values.get('customer_phone') if filled else '')):
             form.labeled(x, row, width, 15, label, value)
             row -= 15
     top -= 14 + 60 + 4
-    for x, width, label in ((LEFT, 170, 'Agent name:'), (LEFT + 170, 230, 'Address:'), (LEFT + 400, 90, 'Phone:'), (LEFT + 490, RIGHT - LEFT - 490, 'US DOT No.:')):
+    # Filled in by hand; the boxes split as on the printed form.
+    for x, width, label in ((LEFT, 177, 'Agent name:'), (LEFT + 177, 185, 'Address:'), (LEFT + 362, 118, 'Phone:'), (LEFT + 480, RIGHT - LEFT - 480, 'US DOT No.:')):
         form.labeled(x, top, width, 12, label)
     column = top - 16
     # Left column: payment, estimated charges, services, disclosures and the shipper's acknowledgment.
@@ -206,14 +210,9 @@ def _front(canvas, company, values, signatures, logo):
     left -= 2
     form.text(LEFT, left - 7, 'C. OPTIONAL ACCESSORIAL SERVICES ORDERED(Round off applied services):', 6.2, bold=True)
     left -= 10
-    applied = ' | '.join(values.get('service_names') or []).lower()
     for row in SERVICES:
-        for index, (label, pattern) in enumerate(row):
-            x = LEFT + index * (width / 4)
-            form.text(x + 2, left - 7, label, 6)
-            if label and pattern and re.search(pattern, applied):
-                canvas.setStrokeColor(BLACK)
-                canvas.ellipse(x - 1, left - 10, x + 5 + canvas.stringWidth(label, 'Helvetica', 6), left - 1)
+        for index, label in enumerate(row):
+            form.text(LEFT + index * (width / 4) + 2, left - 7, label, 6)
         left -= 9.5
     left = form.paragraph(LEFT + 2, left - 2, width - 4, DISCLOSURES, 5.65) - 5
     left = form.bar(LEFT, left, width, 13, 'SIGN AT LEAST 3 DAYS BEFORE PICKUP DATE:', 7.5) - 2

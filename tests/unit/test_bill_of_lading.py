@@ -14,7 +14,7 @@ COMPANY = {'name': 'Gorilla Haulers LLC', 'office_address': '19960 Wild Cherry L
 VALUES = {'mc_number': '1654219', 'order_number': '28288-1', 'pickup_date': '2026-10-31', 'first_available_delivery_date': '2026-12-31',
           'customer_name': 'Pat Customer', 'customer_phone': '2405550100', 'pickup_address': '1 Origin St, Clarksville, MD 21029',
           'delivery_address': '2 Destination Ave, San Antonio, TX 78253', 'total_estimate': '$5,561.79', 'minimum_cuft': '286 cu ft',
-          'minimum_charge': '$1,875.00', 'service_names': ['Storage', 'Delivery shuttle']}
+          'minimum_charge': '$1,875.00'}
 SIGNATURE = {'name': 'Pat Customer', 'signed_at': '2026-11-06T15:00:00Z', 'date': '11/06/2026', 'strokes': [[[0.1, 0.5], [0.9, 0.6]]]}
 
 
@@ -34,9 +34,11 @@ def test_front_is_the_form_filled_from_the_estimate():
     front, back = pages(build_bill_of_lading_pdf(COMPANY, VALUES, terms()))
     for value in ('INTERSTATE BILL OF LADING CONTRACT', 'Gorilla Haulers LLC', 'Phone Number: (301) 747-5811', 'USDOT No.: 3467429',
                   'ICC/MC No.: 1654219', 'Order No.: 28288-1', 'Pick Up Date: 2026-10-31', '2026-12-31', 'NAME: Pat Customer',
-                  'ADDRESS: 1 Origin St', 'CITY/STATE/ZIP: Clarksville, MD 21029', 'ADDRESS: 2 Destination Ave',
+                  'ADDRESS: 1 Origin St', 'CITY/STATE/ZIP: Clarksville, MD 21029',
                   'TOTAL ESTIMATED CHARGES:', '$5,561.79', '286 cu ft', '$1,875.00', 'SUMMARY OF ACTUAL CHARGES', 'DELIVERY ACKNOWLEDGEMENT'):
         assert value in front, value
+    # The destination is left empty.
+    assert 'Destination Ave' not in front and 'San Antonio' not in front
     # The back: the terms from settings, starting at SECTION 1.
     assert back.startswith('SECTION 1: Liability of Gorilla Haulers LLC') and 'SECTION 19' in back
 
@@ -76,3 +78,12 @@ def test_signed_spots_are_of_the_version_shown_or_the_one_signed_in_full(portal)
     # Signed in full: that version stays signed, whatever is shown now.
     sign(1, 'new', 2)
     assert set(mod._signed_spots('estimate-1', 'newer', db)) == {0, 1}
+
+
+def test_address_goes_under_its_titles():
+    from bill_of_lading_pdf import _split_address
+    # A full address: the street, then the city, state and ZIP.
+    assert _split_address('12 Main St, Rockville, MD 20852, USA') == ('12 Main St', 'Rockville, MD 20852')
+    # Only a ZIP code or a city: no street, all on the city, state and ZIP line.
+    assert _split_address('20852') == ('', '20852')
+    assert _split_address('Rockville, MD 20852') == ('', 'Rockville, MD 20852')

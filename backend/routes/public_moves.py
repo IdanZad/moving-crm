@@ -1183,20 +1183,21 @@ def _bill_of_lading(access, db):
     data = json.loads(signed.snapshot)['data']
     estimate = data.get('estimate') or {}
     charges = estimate.get('charges') or []
-    transport = next((charge for charge in charges if charge.get('name') == 'Transportation charge'), {})
-    minimum_charge = re.search(r'minimum charge (\$[\d,]+\.\d{2})', transport.get('description') or '')
-    minimum_cuft = estimate.get('minimum_cuft') or (data.get('packing_package') or {}).get('minimum_cubic_feet')
+    # The minimums the customer signed for: the estimate's volume (as the estimate shows it, rounded up), and the
+    # transportation package's three lines after their discount (the estimate's Subtotal), without the other fees.
+    from math import ceil
+    from rep_discounts import PACKAGE_LINES
+    volume = ceil(float(estimate.get('cuft') or 0))
+    package = [charge for charge in charges if charge.get('name') in PACKAGE_LINES]
     values = {
         'customer_name': data.get('name'), 'customer_phone': data.get('phone'), 'customer_email': data.get('email'),
         'pickup_address': data.get('pickup'), 'delivery_address': data.get('delivery'),
         'stops': '; '.join(stop.get('address', '') for stop in data.get('stops') or []),
         'pickup_date': data.get('move_date'), 'first_available_delivery_date': (data.get('storage') or {}).get('available_date'),
         'order_number': f"{lead.quote_number}-{job.job_order}" if lead.quote_number else str(job.job_order),
-        'total_estimate': money(estimate.get('price')), 'minimum_cuft': f"{float(minimum_cuft):g} cu ft" if minimum_cuft else '',
-        'minimum_charge': minimum_charge[1] if minimum_charge else '',
+        'total_estimate': money(estimate.get('price')), 'minimum_cuft': f"{volume} cu ft" if volume else '',
+        'minimum_charge': money(sum(Decimal(str(charge.get('total') or 0)) for charge in package)) if package else '',
         'services_ordered': ', '.join(charge['name'] for charge in charges if _is_service(charge) and charge.get('total')),
-        # The form circles the optional services these charges name.
-        'service_names': [charge['name'] for charge in charges if _is_service(charge) and charge.get('total')],
         'mc_number': (_company_for(lead, db).mc_number if _company_for(lead, db) else '') or '',
     }
     company = data.get('company_details') or {}
