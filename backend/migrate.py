@@ -31,6 +31,7 @@ def migrate() -> None:
         add_column(connection, 'estimate_signatures', 'report_id', 'TEXT')
         from models import BillOfLadingSignature
         BillOfLadingSignature.__table__.create(connection, checkfirst=True)
+        add_column(connection, 'bill_of_lading_signatures', 'spot', 'INTEGER NOT NULL DEFAULT 0')
         InventoryCatalogSet.__table__.create(connection, checkfirst=True)
         from pickup_areas import migrate_pickup_regions
         logger.info("Copied %s pricing pickup area rows", migrate_pickup_regions(connection))

@@ -114,8 +114,6 @@ class _Form:
 
     def signature(self, x, top, width, height, signature):
         """The drawn signature inside a box's area."""
-        if not signature:
-            return
         self.c.setStrokeColor(colors.HexColor('#15354b'))
         self.c.setLineWidth(1.1)
         box_w, box_h = min(width, height * 4), height - 6
@@ -129,27 +127,33 @@ class _Form:
                 self.c.drawPath(path, stroke=1, fill=0)
 
 
-# The unsigned form's customer signature spots are links marked with this text; the viewer finds them to open signing there.
+# The customer's unsigned signature spots are links marked with this text and the spot's number; the viewer finds
+# them to open that spot's signing there.
 SIGN_HERE = 'sign-here'
+# The customer signs each spot on its own, top to bottom: the customer's signature, then the shipper's.
+SIGN_SPOTS = 2
 
 
-def _signature_row(form, top, label, signature, height=24, customer=True):
-    """A signature line and its date, as the form's yellow spots."""
+def _signature_row(form, top, label, signatures, height=24, spot=None):
+    """A signature line and its date, as the form's yellow spots; spot: the customer's spot number, signed from signatures."""
     form.box(LEFT, top, 190, height)
     form.box(LEFT + 190, top, MIDDLE - LEFT - 190, height)
     form.text(LEFT + 2, top - height + 3, label, 6, bold=True)
     form.text(LEFT + 192, top - 8, 'Date:', 6, bold=True)
+    if spot is None:
+        return top - height
+    signature = signatures.get(spot)
     if signature:
         form.signature(LEFT + 70, top, 115, height, signature)
         form.text(LEFT + 192, top - height + 4, signature['date'], 7.5)
-    elif customer:
-        form.c.linkRect(SIGN_HERE, SIGN_HERE, (LEFT + 70, top - height, LEFT + 188, top), thickness=0)
+    else:
+        form.c.linkRect(f'{SIGN_HERE} {spot}', SIGN_HERE, (LEFT + 70, top - height, LEFT + 188, top), thickness=0)
     return top - height
 
 
-def _front(canvas, company, values, signature, logo):
+def _front(canvas, company, values, signatures, logo):
     form = _Form(canvas, company.get('name') or '')
-    if not signature:
+    if len(signatures) < SIGN_SPOTS:
         canvas.bookmarkPage(SIGN_HERE)
     # Header: the company, its logo, the order boxes and the title.
     street, city = _split_address(company.get('office_address'))
@@ -186,7 +190,7 @@ def _front(canvas, company, values, signature, logo):
     # Left column: payment, estimated charges, services, disclosures and the shipper's acknowledgment.
     width = MIDDLE - LEFT
     left = form.paragraph(LEFT + 2, column, width - 4, FORM_OF_PAYMENT, 6.1) - 4
-    left = _signature_row(form, left, "Customer's Signature", signature) - 3
+    left = _signature_row(form, left, "Customer's Signature", signatures, spot=0) - 3
     left = form.paragraph(LEFT + 2, left, width - 4, ESTIMATED_CHARGES, 5.9) - 4
     for label, value, note in (('TOTAL ESTIMATED CHARGES:', values.get('total_estimate'), 'Estimates are not guaranteed per 49 CFR §375.403(6)'),
                                ('MINIMUM Cu.Ft. / lbs.:', values.get('minimum_cuft'), ''),
@@ -214,8 +218,8 @@ def _front(canvas, company, values, signature, logo):
     left = form.paragraph(LEFT + 2, left - 2, width - 4, DISCLOSURES, 5.65) - 5
     left = form.bar(LEFT, left, width, 13, 'SIGN AT LEAST 3 DAYS BEFORE PICKUP DATE:', 7.5) - 2
     left = form.paragraph(LEFT + 2, left, width - 4, ACKNOWLEDGE, 6.3) - 4
-    left = _signature_row(form, left, 'Shipper/Agent/Representative:', signature)
-    left = _signature_row(form, left, f"{company.get('name') or ''} representative:", None, 18, customer=False)
+    left = _signature_row(form, left, 'Shipper/Agent/Representative:', signatures, spot=1)
+    left = _signature_row(form, left, f"{company.get('name') or ''} representative:", signatures, 18)
     # Right column: the actual charges, filled in on moving day.
     x, width = MIDDLE + 6, RIGHT - MIDDLE - 6
     canvas.setFont('Helvetica-Bold', 7.5)
@@ -262,9 +266,10 @@ def _front(canvas, company, values, signature, logo):
     return left, right - 20
 
 
-def build_bill_of_lading_pdf(company, values, documents, signature=None):
+def build_bill_of_lading_pdf(company, values, documents, signatures=None):
     """The form, filled from the signed estimate (values), then the terms from settings (documents) on the back.
-    signature: the customer's drawn signature with its 'date', on both signature lines; None leaves them empty."""
+    signatures: {spot number: the customer's drawn signature with its 'date'} for the spots signed so far."""
+    signatures = signatures or {}
     from company_documents import pdf_document_flowables
     from inventory_pdf import company_logo_image
     logo = company_logo_image(company.get('logo'))
@@ -281,5 +286,5 @@ def build_bill_of_lading_pdf(company, values, documents, signature=None):
     output = BytesIO()
     doc = SimpleDocTemplate(output, pagesize=letter, leftMargin=LEFT, rightMargin=612 - RIGHT, topMargin=24, bottomMargin=BOTTOM,
                             title='Interstate Bill of Lading Contract', author=company.get('name') or '')
-    doc.build(story, onFirstPage=lambda canvas, _: _front(canvas, company, values, signature, logo))
+    doc.build(story, onFirstPage=lambda canvas, _: _front(canvas, company, values, signatures, logo))
     return output.getvalue()

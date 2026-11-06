@@ -27,7 +27,8 @@ class CompanyDocument(Base):
 
 
 class BillOfLadingSignature(Base):
-    """A signed Bill of Lading: the PDF as signed, for the signed estimate it was filled from."""
+    """One signature spot of a Bill of Lading, signed: the PDF with every spot signed so far, for the signed estimate
+    it was filled from."""
     __tablename__ = 'bill_of_lading_signatures'
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     lead_id = Column(String(36), ForeignKey('leads.id'), nullable=False, index=True)
@@ -35,6 +36,8 @@ class BillOfLadingSignature(Base):
     estimate_signature_id = Column(String(36), ForeignKey('estimate_signatures.id'), nullable=False, index=True)
     # A fingerprint of the filled text the customer saw, so a signature only goes on the version they read.
     content_hash = Column(String(64), nullable=False)
+    # Which of the form's signature spots this signs, top to bottom.
+    spot = Column(Integer, nullable=False, default=0, server_default='0')
     pdf = Column(LargeBinary, nullable=False)
     signer_name = Column(String(200), nullable=False)
     signature = Column(Text, nullable=False)

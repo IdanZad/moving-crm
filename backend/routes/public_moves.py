@@ -1214,55 +1214,69 @@ def _bill_of_lading_status(access, db, estimate_signed):
         return None
     if not estimate_signed:
         return {'signed': False}
+    from bill_of_lading_pdf import SIGN_SPOTS
     found = _bill_of_lading(access, db)
-    return {'signed': bool(found) and _signed_bill_of_lading(found[0].id, db) is not None}
+    return {'signed': bool(found) and len(_signed_spots(found[0].id, found[4], db)) == SIGN_SPOTS}
 
 
-def _signed_bill_of_lading(estimate_signature_id, db):
+def _signed_spots(estimate_signature_id, fingerprint, db):
+    """The Bill of Lading's signed spots, {spot: its signature row}: of the version signed in full, or else of the
+    version shown now (fingerprint); spots signed on an earlier version are signed again."""
+    from bill_of_lading_pdf import SIGN_SPOTS
     from models import BillOfLadingSignature
-    return db.query(BillOfLadingSignature).filter_by(estimate_signature_id=estimate_signature_id).order_by(
-        BillOfLadingSignature.signed_at.desc()).first()
+    versions = {}
+    for row in db.query(BillOfLadingSignature).filter_by(estimate_signature_id=estimate_signature_id).order_by(
+            BillOfLadingSignature.signed_at):
+        versions.setdefault(row.content_hash, {})[row.spot] = row
+    return next((spots for spots in versions.values() if len(spots) == SIGN_SPOTS), versions.get(fingerprint, {}))
 
 
 @router.get('/api/public-moves/{access_id}/bill-of-lading.pdf')
 def bill_of_lading_pdf(access: PublicMoveAccess = Depends(verified), db: Session = Depends(get_db)):
-    """The Bill of Lading as signed for the current signed estimate, or ready to sign (its fingerprint in X-Revision)."""
-    from bill_of_lading_pdf import build_bill_of_lading_pdf
+    """The Bill of Lading for the current signed estimate, with the spots signed so far (X-Signed once all are), ready to
+    sign its other spots (its fingerprint in X-Revision)."""
+    from bill_of_lading_pdf import SIGN_SPOTS, build_bill_of_lading_pdf
     found = _bill_of_lading(access, db)
     if not found:
         raise HTTPException(409, 'The Bill of Lading is ready once the estimate is signed.')
     estimate, company, values, documents, fingerprint = found
-    signed = _signed_bill_of_lading(estimate.id, db)
+    spots = _signed_spots(estimate.id, fingerprint, db)
     headers = {'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff', 'X-Revision': fingerprint,
-               'Access-Control-Expose-Headers': 'X-Revision, X-Signed', 'X-Signed': '1' if signed else '0'}
-    pdf = signed.pdf if signed else build_bill_of_lading_pdf(company, values, documents)
+               'Access-Control-Expose-Headers': 'X-Revision, X-Signed', 'X-Signed': '1' if len(spots) == SIGN_SPOTS else '0'}
+    # The latest signing's PDF carries every spot signed so far.
+    pdf = max(spots.values(), key=lambda row: row.signed_at).pdf if spots else build_bill_of_lading_pdf(company, values, documents)
     return Response(pdf, media_type='application/pdf', headers={**headers, 'Content-Disposition': 'inline; filename="bill-of-lading.pdf"'})
 
 
-@router.post('/api/public-moves/{access_id}/bill-of-lading/{revision}/sign')
-def sign_bill_of_lading(revision: str, body: SigningInput, access: PublicMoveAccess = Depends(verified), db: Session = Depends(get_db)):
-    from bill_of_lading_pdf import build_bill_of_lading_pdf
+@router.post('/api/public-moves/{access_id}/bill-of-lading/{spot}/{revision}/sign')
+def sign_bill_of_lading(spot: int, revision: str, body: SigningInput, access: PublicMoveAccess = Depends(verified), db: Session = Depends(get_db)):
+    """Signs one of the Bill of Lading's signature spots."""
+    from bill_of_lading_pdf import SIGN_SPOTS, build_bill_of_lading_pdf
     from models import BillOfLadingSignature
     name = body.name.strip()
     if not name:
         raise HTTPException(422, 'Enter your full name')
+    if not 0 <= spot < SIGN_SPOTS:
+        raise HTTPException(404, 'No such signature spot on the Bill of Lading.')
     found = _bill_of_lading(access, db)
     if not found:
         raise HTTPException(409, 'The Bill of Lading is ready once the estimate is signed.')
     estimate, company, values, documents, fingerprint = found
     if revision != fingerprint:
         raise HTTPException(409, 'The Bill of Lading changed while you were reviewing it. Close it and open it again to sign.')
-    existing = _signed_bill_of_lading(estimate.id, db)
-    if existing:
+    spots = _signed_spots(estimate.id, fingerprint, db)
+    if spot in spots or len(spots) == SIGN_SPOTS:
+        existing = spots.get(spot) or max(spots.values(), key=lambda row: row.signed_at)
         return {'id': existing.id, 'name': existing.signer_name, 'signed_at': existing.signed_at.isoformat() + 'Z'}
     signed_at = datetime.utcnow()
     # The date on the form's signature lines, by the company's clock.
     zone = _company_for(db.get(Lead, access.lead_id), db)
     date = datetime.now(ZoneInfo(zone.timezone if zone else 'America/New_York')).strftime('%m/%d/%Y')
     signature = {'name': name, 'signed_at': signed_at.isoformat() + 'Z', 'date': date, 'strokes': body.strokes}
+    signatures = {**{number: json.loads(row.signature) for number, row in spots.items()}, spot: signature}
     record = BillOfLadingSignature(lead_id=access.lead_id, job_id=access.job_id, estimate_signature_id=estimate.id,
-        content_hash=fingerprint, signer_name=name, signature=json.dumps(signature), signed_at=signed_at,
-        pdf=build_bill_of_lading_pdf(company, values, documents, signature))
+        content_hash=fingerprint, spot=spot, signer_name=name, signature=json.dumps(signature), signed_at=signed_at,
+        pdf=build_bill_of_lading_pdf(company, values, documents, signatures))
     db.add(record)
     db.commit()
     return {'id': record.id, 'name': name, 'signed_at': signature['signed_at']}

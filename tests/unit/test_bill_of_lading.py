@@ -7,6 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'backend'))
 from bill_of_lading_pdf import build_bill_of_lading_pdf
 from company_documents import bill_of_lading_body, clean_html, resolve_parameters
 from models import Company
+from test_public_moves import portal  # noqa: F401  (fixture)
 
 COMPANY = {'name': 'Gorilla Haulers LLC', 'office_address': '19960 Wild Cherry Ln, Germantown, MD 20874', 'phone': '(301) 747-5811',
            'dot_number': '3467429'}
@@ -40,8 +41,38 @@ def test_front_is_the_form_filled_from_the_estimate():
     assert back.startswith('SECTION 1: Liability of Gorilla Haulers LLC') and 'SECTION 19' in back
 
 
-def test_signature_date_goes_on_both_lines_once_signed():
-    unsigned = pages(build_bill_of_lading_pdf(COMPANY, VALUES, terms()))[0]
-    signed = pages(build_bill_of_lading_pdf(COMPANY, VALUES, terms(), SIGNATURE))[0]
-    assert '11/06/2026' not in unsigned
-    assert signed.count('11/06/2026') == 2
+def test_each_spot_is_signed_on_its_own():
+    from bill_of_lading_pdf import SIGN_HERE
+
+    def build(signatures=None):
+        pdf = build_bill_of_lading_pdf(COMPANY, VALUES, terms(), signatures)
+        # The spots left to sign, as the viewer finds them.
+        return pages(pdf)[0], [spot for spot in (0, 1) if f'/Contents ({SIGN_HERE} {spot})'.encode() in pdf]
+    unsigned, unsigned_spots = build()
+    assert '11/06/2026' not in unsigned and unsigned_spots == [0, 1]
+    # The top spot signed: its date is on, and only the next spot is left.
+    first, first_spots = build({0: SIGNATURE})
+    assert first.count('11/06/2026') == 1 and first_spots == [1]
+    both, both_spots = build({0: SIGNATURE, 1: dict(SIGNATURE, date='11/07/2026')})
+    assert '11/06/2026' in both and '11/07/2026' in both and both_spots == []
+
+
+def test_signed_spots_are_of_the_version_shown_or_the_one_signed_in_full(portal):
+    from datetime import datetime, timedelta
+    from models import BillOfLadingSignature
+    mod, db, lead, access = portal
+    start = datetime(2026, 11, 6, 15)
+
+    def sign(spot, version, minutes):
+        db.add(BillOfLadingSignature(lead_id=lead.id, job_id=access.job_id, estimate_signature_id='estimate-1', content_hash=version,
+                                     spot=spot, pdf=b'%PDF', signer_name='Pat', signature='{}', signed_at=start + timedelta(minutes=minutes)))
+        db.commit()
+    # The top spot signed on an earlier version is signed again on the version shown now.
+    sign(0, 'old', 0)
+    assert mod._signed_spots('estimate-1', 'new', db) == {}
+    assert set(mod._signed_spots('estimate-1', 'old', db)) == {0}
+    sign(0, 'new', 1)
+    assert set(mod._signed_spots('estimate-1', 'new', db)) == {0}
+    # Signed in full: that version stays signed, whatever is shown now.
+    sign(1, 'new', 2)
+    assert set(mod._signed_spots('estimate-1', 'newer', db)) == {0, 1}
