@@ -1192,7 +1192,7 @@ export default function CustomerMovePage() {
                 <p>Upload photos, videos, or documents, create an item list, or schedule a live virtual walkthrough with our team.</p>
                 <p>Your saved item list and uploaded media stay together. Generate one report to combine both into your inventory and estimate.</p>
                 <div className="cm-inventory-actions">
-                  <button type="button" className="slds-button cm-add-list-button" disabled={!sectionReady('inventory')} onClick={() => setShowInventoryList(true)}>{!sectionReady('inventory') ? 'Loading inventory...' : data.combined_inventory?.length ? 'Update inventory' : 'Add a list'}</button>
+                  <button type="button" className="slds-button cm-add-list-button" disabled={!sectionReady('inventory')} onClick={() => setShowInventoryList(true)}>{!sectionReady('inventory') ? 'Loading inventory...' : readOnly ? 'View inventory' : data.combined_inventory?.length ? 'Update inventory' : 'Add a list'}</button>
                   <button type="button" className="slds-button cm-add-list-button" disabled={busy || !photosRestored || readOnly} onClick={() => filePicker.current?.click()} aria-busy={files.some(f => f.status === 'Uploading')}>{files.some(f => f.status === 'Uploading') ? 'Uploading...' : 'Upload files'}</button>
                   <button type="button" className="slds-button cm-add-list-button" disabled={!sectionReady('media') || readOnly} onClick={() => meetingDialog.current?.showModal()}>Virtual estimate</button>
                   <input ref={filePicker} type="file" multiple hidden disabled={busy || !photosRestored || readOnly} onChange={e=>{void choose(e.target.files);e.target.value='';}}/>
@@ -1381,7 +1381,7 @@ export default function CustomerMovePage() {
                 };
                 const sparkBusy = !!data.spark && data.spark.status !== 'completed' && data.spark.status !== 'failed';
                 return <ol className={`cm-estimate-flow${billOfLading ? ' has-four' : ''}`} aria-label="Complete your estimate">
-                <li><button type="button" className={`cm-flow-step${nextStep === 1 ? ' is-current' : ''}`} disabled={!sectionReady('inventory')} onClick={() => setShowInventoryList(true)}><span className="cm-flow-head"><span className="cm-flow-number">1</span><span className="cm-flow-label">Inventory{status(1, hasInventory)}</span>{sectionReady('inventory') && <CompletionIcon complete={hasInventory} label={hasInventory ? 'Inventory added' : 'Inventory missing'}/>}</span>{action(1, hasInventory ? 'Edit' : 'Add', 'Add', !sectionReady('inventory') ? 'Loading...' : '')}</button></li>
+                <li><button type="button" className={`cm-flow-step${nextStep === 1 ? ' is-current' : ''}`} disabled={!sectionReady('inventory')} onClick={() => setShowInventoryList(true)}><span className="cm-flow-head"><span className="cm-flow-number">1</span><span className="cm-flow-label">Inventory{status(1, hasInventory)}</span>{sectionReady('inventory') && <CompletionIcon complete={hasInventory} label={hasInventory ? 'Inventory added' : 'Inventory missing'}/>}</span>{action(1, readOnly ? 'View' : hasInventory ? 'Edit' : 'Add', readOnly ? 'View' : 'Add', !sectionReady('inventory') ? 'Loading...' : '')}</button></li>
                 <li>
                   <button
                     type="button"
@@ -1406,7 +1406,7 @@ export default function CustomerMovePage() {
                   >
                     <span className="cm-flow-head"><span className="cm-flow-number">2</span><span className="cm-flow-label">Extra services{status(2, servicesDone)}</span>
                     {sectionReady('pricing') && <CompletionIcon complete={servicesDone} label={servicesDone ? 'All required service answers complete' : answersSaving ? 'Saving service answers' : 'Required service answers missing'}/>}</span>
-                    {action(2, servicesDone ? 'Edit' : 'Add', 'Add', answersSaving ? 'Saving...' : pricingLoading || !sectionReady('pricing') ? 'Loading...' : '')}
+                    {action(2, readOnly ? 'View' : servicesDone ? 'Edit' : 'Add', readOnly ? 'View' : 'Add', answersSaving ? 'Saving...' : pricingLoading || !sectionReady('pricing') ? 'Loading...' : '')}
                   </button>
                 </li>
                 <li><button type="button" className={`cm-flow-step${nextStep === 3 ? ' is-current' : ''}`} disabled={!data.estimate || data.spark?.status !== 'completed' || pdfBusy || answersSaving || calculatingPrice || busy || pricingLoading || !!pricingLoadError} onClick={() => void openEstimate()}><span className="cm-flow-head"><span className="cm-flow-number">3</span><span className="cm-flow-label">Estimate{status(3, signed, data.signature_status === 'changed' ? 'Changed - sign again' : 'Action required')}</span>{sectionReady('pricing') && <CompletionIcon complete={signed} label={signed ? 'Current estimate signed' : 'Signature required'}/>}</span>{action(3, signed ? 'View' : data.signature_status === 'changed' ? 'Re-sign' : 'Sign', data.signature_status === 'changed' ? 'Re-sign' : 'Sign',
@@ -1636,7 +1636,7 @@ export default function CustomerMovePage() {
                     {packingStep === 'items' ? <button type="button" className="slds-button cm-primary" aria-busy={answersSaving} onClick={nextTermsStep}>{currentTermsStep < termsGroups.length - 1 ? 'Next' : 'Done'}</button> : <button type="button" className="slds-button cm-primary" onClick={()=>void nextPricingStep()}>{packingStep==='package'&&nextPackingSection?`Next: ${nextPackingSection==='boxes'?'boxes':'item protection'}`:nextPricing ? `Next: ${nextPricingLabels[nextPricing]}` : 'Done'}</button>}
 
                   </div>
-                  {<small className="cm-answer-autosave-note" role="status" aria-live="polite">{answersSaving ? 'Saving...' : failedAnswers.current.size ? 'Could not save all answers. Please retry.' : answerSaveStarted ? <><span className="cm-save-check" aria-hidden="true">&#10003;</span> Saved</> : 'Your answers save automatically.'}</small>}
+                  {<small className="cm-answer-autosave-note" role="status" aria-live="polite">{readOnly ? '' : answersSaving ? 'Saving...' : failedAnswers.current.size ? 'Could not save all answers. Please retry.' : answerSaveStarted ? <><span className="cm-save-check" aria-hidden="true">&#10003;</span> Saved</> : 'Your answers save automatically.'}</small>}
                 </div>
               </div>
             )}

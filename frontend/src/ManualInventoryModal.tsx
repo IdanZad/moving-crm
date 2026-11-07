@@ -539,7 +539,7 @@ export default function ManualInventoryModal({ loadCatalog, searchCatalog, submi
     <div className="mi-body">
       {!catalog ? <p>Loading inventory...</p> : <>
         <div className="mi-room-toolbar">
-          <p key={roomHintFlash} id="mi-room-hint" className={roomHintFlash ? 'mi-hint-flash' : undefined}>{rooms.length ? 'Choose a room to add items to it, or add a room.' : 'Add a room to start adding items.'}</p>
+          <p key={roomHintFlash} id="mi-room-hint" className={roomHintFlash ? 'mi-hint-flash' : undefined}>{readOnly ? 'Choose a room to see its items.' : rooms.length ? 'Choose a room to add items to it, or add a room.' : 'Add a room to start adding items.'}</p>
           <div className="mi-room-picker" onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setRoomPickerOpen(false); }} onKeyDown={event => {
             if (event.key === 'Escape' && roomPickerOpen) { event.preventDefault(); event.stopPropagation(); setRoomPickerOpen(false); addRoomButton.current?.focus(); }
           }}>
@@ -659,7 +659,7 @@ export default function ManualInventoryModal({ loadCatalog, searchCatalog, submi
         </section>
       </>}
     </div>
-    <footer><span role="status">{finishing ? 'Updating your estimate...' : busy ? 'Saving your list...' : saveStatus || 'Changes save automatically. Done updates your estimate.'}</span><button type="button" className="slds-button cm-primary" disabled={catalogOpen ? finishing : busy || !catalog || rooms.some(r => !r.name.trim())} onClick={() => {
+    <footer><span role="status">{finishing ? 'Updating your estimate...' : busy ? 'Saving your list...' : saveStatus || (readOnly ? '' : 'Changes save automatically. Done updates your estimate.')}</span><button type="button" className="slds-button cm-primary" disabled={catalogOpen ? finishing : busy || !catalog || rooms.some(r => !r.name.trim())} onClick={() => {
       if (catalogOpen) {
         viewInventoryRequested.current = true;
         setCatalogOpen(false);
