@@ -573,6 +573,27 @@ export default function CustomerMovePage() {
     await call('/mileage', {routes: distances});
     return true;
   }
+  // What the inventory's Done does: once the service answers are saved, price the list (or start its report), then
+  // reload the list, volume and price.
+  async function finishInventory() {
+    await answerQueue.current;
+    if (failedAnswers.current.size || failedPricing.current.size) {
+      throw new Error('Your list is saved. Please retry saving your service answers before calculating the price.');
+    }
+    await call(data?.spark?.status === 'completed' ? '/recalculate-price' : '/generate-inventory-report', {});
+    // Done changes the list, volume and price; the rest of the page is unchanged.
+    await Promise.allSettled([loadSection('inventory', true), loadSection('volume', true), loadSection('pricing', true)]);
+    setCalculationError('');
+  }
+  // A list without a price (Done never finished, or pricing failed): on opening, Done runs once for the customer.
+  const autoFinished = useRef(false);
+  useEffect(() => {
+    if (autoFinished.current || !data || !sections.inventory.ready || !sections.pricing.ready) return;
+    if (!data.combined_inventory?.length || data.estimate || data.spark?.status === 'queued' || data.spark?.status === 'running') return;
+    autoFinished.current = true;
+    setCalculatingPrice(true);
+    finishInventory().catch(error => setCalculationError((error as Error).message)).finally(() => setCalculatingPrice(false));
+  });
   async function recalculatePrice() {
     if (priceCalculationRunning.current) return;
     priceCalculationRunning.current = true;
@@ -1503,16 +1524,7 @@ export default function CustomerMovePage() {
               // Saving the list does not reprice; the estimate is only marked as needing an update.
               setData(previous => previous ? {...previous, estimate_needs_update: true, signature_status: undefined} : previous);
               return result;
-            }} onDone={async () => {
-              await answerQueue.current;
-              if (failedAnswers.current.size || failedPricing.current.size) {
-                throw new Error('Your list is saved. Please retry saving your service answers before calculating the price.');
-              }
-              await call(data.spark?.status === 'completed' ? '/recalculate-price' : '/generate-inventory-report', {});
-              // Done changes the list, volume and price; the rest of the page is unchanged.
-              await Promise.allSettled([loadSection('inventory', true), loadSection('volume', true), loadSection('pricing', true)]);
-              setCalculationError('');
-            }} onClose={changed => { setShowInventoryList(false); if (changed) void loadSection('inventory', true); }} />}
+            }} onDone={finishInventory} priced={!!data.estimate} onClose={changed => { setShowInventoryList(false); if (changed) void loadSection('inventory', true); }} />}
             {inventoryPdf && <InventoryViewer url={inventoryPdf.url} filename={inventoryPdf.filename} title={inventoryPdf.title} description={inventoryPdf.description} onClose={() => { URL.revokeObjectURL(inventoryPdf.url); setInventoryPdf(null); }} />}
             {showQuestions && (
               <div className="cm-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="packing-title" onClick={event => { if (event.target === event.currentTarget) setShowQuestions(false); }}>

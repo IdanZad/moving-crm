@@ -171,8 +171,10 @@ function RoomCard({ room, selected, busy, locked = false, summary, onSelect, onR
     <button type="button" className="mi-remove" disabled={busy || locked} aria-label={`Delete room ${room.name}`} onClick={onDelete}>&times;</button>
   </article>;
 }
-export default function ManualInventoryModal({ loadCatalog, searchCatalog, submitActions, downloadPdf, onDone, onClose, draftKey, loadInventory, packing, imageEndpoint, linkKey='', session='', visible=true, readOnly=false }: {
+export default function ManualInventoryModal({ loadCatalog, searchCatalog, submitActions, downloadPdf, onDone, onClose, draftKey, loadInventory, packing, imageEndpoint, linkKey='', session='', visible=true, readOnly=false, priced=true }: {
   visible?: boolean;
+  // Whether the list has a price: without one, Done prices it even when nothing changed.
+  priced?: boolean;
   // The list can be seen, rooms filtered and the PDF opened, but nothing changed or saved.
   readOnly?: boolean;
   submitActions: (requestId: string, edits: InventoryEdits, revision: string, reportId: string | null) => Promise<{revision:string}>;
@@ -501,16 +503,16 @@ export default function ManualInventoryModal({ loadCatalog, searchCatalog, submi
   // Done, the close button and Escape all do the same: save the list and update the estimate.
   async function save() {
     if (busy) return;
-    if (!catalog || readOnly) { onClose(false); return; }
+    if (!catalog || (readOnly && priced)) { onClose(false); return; }
     if (rooms.some(r => !r.name.trim())) { setError('Enter a name for each room before closing.'); return; }
-    if (!dirty.current && !pending.current && !saving.current && !savedChanges.current) { onClose(false); return; }
+    if (!dirty.current && !pending.current && !saving.current && !savedChanges.current && priced) { onClose(false); return; }
     setBusy(true); setError('');
     try {
       if (dirty.current || pending.current || saving.current) {
         if (inFlight.current !== rooms) pending.current = rooms;
         await flush();
       }
-      if (savedChanges.current) {
+      if (savedChanges.current || !priced) {
         setFinishing(true);
         await onDone();
         savedChanges.current = false;
