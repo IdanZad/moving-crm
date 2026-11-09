@@ -294,11 +294,16 @@ def _website_message(text, timestamp, role="user", **extra):
             "message_id": f"m-{timestamp}", "text": text, "timestamp": timestamp, "role": role, **extra}
 
 
+class _HashableLead(SimpleNamespace):
+    """A lead stand-in the route can de-duplicate like a model instance (it keys leads in a dict)."""
+    __hash__ = object.__hash__
+
+
 def test_website_chat_links_the_whole_conversation_to_its_lead(monkeypatch):
     company = SimpleNamespace(name="Gorilla Haulers", aircall_number_id="")
-    lead = SimpleNamespace(
+    lead = _HashableLead(
         id="lead-7", company_id="company-1", assigned_to=None, full_name="Dana Demo", phone="2405550188",
-        facebook_user_id=None, company=company, assignee=None,
+        facebook_user_id=None, company=company, assignee=None, contacts=[],
         created_at=datetime(2026, 11, 1), updated_at=datetime(2026, 11, 1),
     )
     monkeypatch.setattr(chats, "_user_company_ids", lambda user, db: ["company-1"])
